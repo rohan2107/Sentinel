@@ -1,0 +1,20 @@
+{
+  "policy_name": "sample-default",
+  "base_score": 100,
+  "rules": [
+    {
+      "id": "firewall_enabled",
+      "desc": "Windows Firewall should be enabled",
+      "query": "SELECT * FROM firewall_rules WHERE active=1;",
+      "lua": "return (#results > 0) and (results[1].active == 1)",
+      "weight": 20
+    },
+    {
+      "id": "av_installed",
+      "desc": "Antivirus product present",
+      "query": "SELECT name FROM anti_virus WHERE name IS NOT NULL;",
+      "lua": "return #results > 0",
+      "weight": 30
+    }
+  ]
+}
