@@ -1,0 +1,10 @@
+{
+  "details": {
+    "av_installed": false,
+    "firewall_enabled": false
+  },
+  "hostname": "NITRO5ROHAN",
+  "policy": "sample-default",
+  "score": 50,
+  "timestamp": "2025-09-05T11:09:59.834Z"
+}

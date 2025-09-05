@@ -29,11 +29,15 @@ else()
   message(FATAL_ERROR "Lua not found. Install lua via vcpkg or adjust _vcpkg_root.")
 endif()
 
+# SQLite (vcpkg exposes unofficial-sqlite3)
+find_package(unofficial-sqlite3 CONFIG REQUIRED)
+
 add_executable(SentinelAgent
   src/main.cpp
   src/osquery_runner.cpp
   src/lua_evaluator.cpp
   src/scoring.cpp
+  src/db.cpp
 )
 
 target_include_directories(SentinelAgent PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -43,4 +47,5 @@ target_link_libraries(SentinelAgent PRIVATE
   spdlog::spdlog
   sol2::sol2
   Lua::Lua
+  unofficial::sqlite3::sqlite3
 )

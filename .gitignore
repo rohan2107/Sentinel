@@ -5,3 +5,6 @@ cmake-build-debug
 *.pdb
 .vs/
 /.vscode
+sentinel_data.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
