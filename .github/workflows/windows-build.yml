@@ -1,0 +1,57 @@
+name: Windows Build (CMake + vcpkg)
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+      VCPKG_DEFAULT_TRIPLET: x64-windows
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild tools
+        uses: microsoft/setup-msbuild@v1
+
+      - name: Install Python (needed by some vcpkg scripts)
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Clone vcpkg
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git "%VCPKG_ROOT%"
+          pushd "%VCPKG_ROOT%"
+          bootstrap-vcpkg.bat
+          popd
+
+      - name: Install vcpkg packages
+        run: |
+          set VCPKG=%VCPKG_ROOT%\vcpkg.exe
+          "%VCPKG%" install nlohmann-json spdlog sol2 lua sqlite3 --triplet x64-windows
+
+      - name: Configure (CMake)
+        run: |
+          mkdir build
+          cmake -S . -B build -A x64 -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build (Release)
+        run: cmake --build build --config Release
+
+      - name: Build (Debug)
+        run: cmake --build build --config Debug
+
+      - name: Upload build log (artifact)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cmake-build
+          path: build
+
