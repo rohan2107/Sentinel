@@ -26,6 +26,7 @@ jobs:
           python-version: '3.11'
 
       - name: Clone vcpkg
+        shell: cmd
         run: |
           git clone https://github.com/microsoft/vcpkg.git "%VCPKG_ROOT%"
           pushd "%VCPKG_ROOT%"
@@ -33,19 +34,23 @@ jobs:
           popd
 
       - name: Install vcpkg packages
+        shell: cmd
         run: |
-          set VCPKG=%VCPKG_ROOT%\vcpkg.exe
+          set "VCPKG=%VCPKG_ROOT%\vcpkg.exe"
           "%VCPKG%" install nlohmann-json spdlog sol2 lua sqlite3 --triplet x64-windows
 
       - name: Configure (CMake)
+        shell: cmd
         run: |
           mkdir build
           cmake -S . -B build -A x64 -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows -DCMAKE_BUILD_TYPE=Release
 
       - name: Build (Release)
+        shell: cmd
         run: cmake --build build --config Release
 
       - name: Build (Debug)
+        shell: cmd
         run: cmake --build build --config Debug
 
       - name: Upload build log (artifact)
@@ -54,4 +59,3 @@ jobs:
         with:
           name: cmake-build
           path: build
-
