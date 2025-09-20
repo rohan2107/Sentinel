@@ -16,9 +16,8 @@
 
 using json = nlohmann::json;
 
-static std::string escape_shell_quotes(const std::string& s) {
-    // Keep simple: on Windows double quotes are used; on Unix we wrap in single quotes later.
-    // We will build a command that uses double quotes for osqueryi --json "<query>"
+// Escape double quotes for Windows command line usage.
+static std::string escape_shell_quotes_windows(const std::string& s) {
     std::string out;
     out.reserve(s.size() * 2);
     for (char c : s) {
@@ -32,19 +31,35 @@ static std::string escape_shell_quotes(const std::string& s) {
     return out;
 }
 
+// Escape single quotes for POSIX shell by doubling them: ' -> '\''  (we implement the simpler doubling approach)
+static std::string escape_single_quotes_unix(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() * 2);
+    for (char c : s) {
+        if (c == '\'') {
+            out += "''"; // osquery SQL can accept doubled single quotes for escaping
+        } else {
+            out += c;
+        }
+    }
+    return out;
+}
+
 json run_osquery_json(const std::string& sql_query) {
-    // Construct command: osqueryi --json "<query>"
+    // Build osqueryi command to return JSON
     std::ostringstream cmd;
 #ifdef _WIN32
-    // windows: use double quotes
-    cmd << "osqueryi --json \"" << escape_shell_quotes(sql_query) << "\"";
+    cmd << "osqueryi --json \""
+        << escape_shell_quotes_windows(sql_query)
+        << "\"";
 #else
-    // unix: wrap in single quotes to avoid shell interpolation; single quotes inside query are rare for SQL
-    // if needed, users can escape single quotes in policy queries by doubling them.
-    cmd << "osqueryi --json '" << sql_query << "'";
+    cmd << "osqueryi --json '"
+        << escape_single_quotes_unix(sql_query)
+        << "'";
 #endif
 
-    std::array<char, 4096> buffer;
+    // Larger buffer to better handle big JSON payloads
+    std::array<char, 16 * 1024> buffer;
     std::string result;
 
     FILE* pipe = POPEN(cmd.str().c_str(), "r");
@@ -57,17 +72,25 @@ json run_osquery_json(const std::string& sql_query) {
     }
 
     int rc = PCLOSE(pipe);
-    (void)rc;
 
     try {
         if (result.empty()) {
+            // osqueryi produced no output (treat as empty result set)
             return json::array();
         }
         json parsed = json::parse(result);
+        // Optionally, you could inspect rc here and log it; non-zero rc sometimes still returns JSON.
+        if (rc != 0) {
+            std::ostringstream warn;
+            warn << "osqueryi exited with code " << rc << " but returned JSON.";
+            // We throw on non-zero only when parsing fails below — keep lenient but informative.
+            // spdlog isn't included here; callers should log if desired.
+        }
         return parsed;
     } catch (const std::exception& e) {
         std::ostringstream oss;
-        oss << "osqueryi returned invalid JSON: " << e.what() << "\nraw output:\n" << result;
+        oss << "osqueryi returned invalid JSON (exit code " << rc << "): " << e.what()
+            << "\nraw output:\n" << result;
         throw std::runtime_error(oss.str());
     }
 }

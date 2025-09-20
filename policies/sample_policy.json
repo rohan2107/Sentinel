@@ -5,22 +5,22 @@
     {
       "id": "firewall_enabled",
       "desc": "Windows Firewall should be enabled (at least one firewall product/state=On)",
-      "query": "SELECT name, state, type FROM windows_security_products WHERE type = 'Firewall' LIMIT 5;",
-      "lua": "if #results == 0 then return false end\nfor i=1,#results do\n  local s = results[i].state or \"\"\n  s = string.lower(tostring(s))\n  if s == \"on\" or s == \"1\" or tonumber(s) == 1 then return true end\nend\nreturn false",
+      "query": "SELECT name, state, type FROM windows_security_products WHERE type = 'Firewall' LIMIT 5",
+      "lua": "if #results == 0 then return false end\nfor i = 1, #results do\n  local s = tostring(results[i].state or \"\")\n  s = string.lower(s)\n  if s == \"on\" or s == \"1\" then return true end\n  local n = tonumber(s)\n  if n ~= nil and n == 1 then return true end\nend\nreturn false",
       "weight": 20
     },
     {
       "id": "av_installed",
       "desc": "Antivirus/security product present and enabled",
-      "query": "SELECT name, state, signatures_up_to_date, type FROM windows_security_products WHERE type = 'Antivirus' LIMIT 10;",
-      "lua": "if #results == 0 then return false end\nfor i=1,#results do\n  local s = results[i].state or \"\"\n  s = string.lower(tostring(s))\n  if s == \"on\" or s == \"1\" or tonumber(s) == 1 then return true end\n  -- fallback: treat signature presence as a sign of an installed AV\n  local sig = results[i].signatures_up_to_date or \"\"\n  if sig == \"1\" or tonumber(sig) == 1 then return true end\nend\nreturn false",
+      "query": "SELECT name, state, signatures_up_to_date, type FROM windows_security_products WHERE type = 'Antivirus' LIMIT 10",
+      "lua": "if #results == 0 then return false end\nfor i = 1, #results do\n  local s = tostring(results[i].state or \"\")\n  s = string.lower(s)\n  if s == \"on\" or s == \"1\" then return true end\n  local n = tonumber(s)\n  if n ~= nil and n == 1 then return true end\n  -- fallback: signatures_up_to_date indicates presence\n  local sig = tostring(results[i].signatures_up_to_date or \"\")\n  if sig == \"1\" or tonumber(sig) == 1 then return true end\nend\nreturn false",
       "weight": 30
     },
     {
       "id": "security_center_status",
       "desc": "Windows Security Center overall status (firewall/antivirus should be Good)",
-      "query": "SELECT antivirus, firewall, autoupdate FROM windows_security_center LIMIT 1;",
-      "lua": "if #results == 0 then return false end\nlocal r = results[1]\nlocal function ok(val)\n  if val == nil then return false end\n  local s = string.lower(tostring(val))\n  return s == \"good\" or s == \"on\" or s == \"1\" or tonumber(s) and tonumber(s) ~= 0\nend\nreturn ok(r.antivirus) and ok(r.firewall)",
+      "query": "SELECT antivirus, firewall, autoupdate FROM windows_security_center LIMIT 1",
+      "lua": "if #results == 0 then return false end\nlocal r = results[1]\nlocal function ok(val)\n  if val == nil then return false end\n  local s = string.lower(tostring(val))\n  if s == \"good\" or s == \"on\" or s == \"1\" then return true end\n  local n = tonumber(s)\n  return (n ~= nil and n ~= 0)\nend\nreturn ok(r.antivirus) and ok(r.firewall)",
       "weight": 25
     }
   ]

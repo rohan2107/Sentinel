@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Sentinel** is a lightweight C++ agent that evaluates device posture using [osquery](https://osquery.io) and [Lua](https://www.lua.org/) rules.  
+**Sentinel** is a lightweight C++ agent that evaluates device security using [osquery](https://osquery.io) and [Lua](https://www.lua.org/) rules and then produces a score.  
 It reads JSON policy files, runs the associated osquery checks, evaluates them via Lua, and generates a compliance score with detailed reporting.
 
 ## Features
@@ -29,3 +29,9 @@ From repo root:
 
 ```bat
 scripts\build.bat
+```
+
+### Run
+```bat
+scripts\build.bat
+```

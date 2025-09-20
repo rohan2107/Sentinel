@@ -1,5 +1,6 @@
 name: Windows Build (CMake + vcpkg)
 
+# Trigger on pushes / PRs to the repo's main development branch (master)
 on:
   push:
     branches: [ master ]
@@ -10,28 +11,47 @@ jobs:
   build-windows:
     runs-on: windows-latest
     env:
+      # vcpkg root inside the workspace
       VCPKG_ROOT: ${{ github.workspace }}\vcpkg
       VCPKG_DEFAULT_TRIPLET: x64-windows
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup MSBuild tools
+      - name: Setup MSBuild tooling
         uses: microsoft/setup-msbuild@v1
 
-      - name: Install Python (needed by some vcpkg scripts)
+      # vcpkg bootstrap + installs can be slow on cold CI runs.
+      # We cache vcpkg installed files and the packages folder across runs to speed up subsequent builds.
+      - name: Cache vcpkg installed & packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}\vcpkg\installed
+            ${{ github.workspace }}\vcpkg\packages
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('**/vcpkg.json') }}
+          # restore-keys fallback in case vcpkg.json changed:
+          restore-keys: |
+            vcpkg-${{ runner.os }}-
+
+      - name: Install Python (some vcpkg scripts use Python)
         uses: actions/setup-python@v4
         with:
           python-version: '3.11'
 
       - name: Clone vcpkg
+        # Use cmd shell to keep syntax consistent with later steps
         shell: cmd
         run: |
-          git clone https://github.com/microsoft/vcpkg.git "%VCPKG_ROOT%"
-          pushd "%VCPKG_ROOT%"
-          bootstrap-vcpkg.bat
-          popd
+          if not exist "%VCPKG_ROOT%" (
+            git clone https://github.com/microsoft/vcpkg.git "%VCPKG_ROOT%"
+            pushd "%VCPKG_ROOT%"
+            bootstrap-vcpkg.bat
+            popd
+          ) else (
+            echo vcpkg already present
+          )
 
       - name: Install vcpkg packages
         shell: cmd
@@ -42,7 +62,7 @@ jobs:
       - name: Configure (CMake)
         shell: cmd
         run: |
-          mkdir build
+          if not exist build mkdir build
           cmake -S . -B build -A x64 -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows -DCMAKE_BUILD_TYPE=Release
 
       - name: Build (Release)
@@ -53,7 +73,7 @@ jobs:
         shell: cmd
         run: cmake --build build --config Debug
 
-      - name: Upload build log (artifact)
+      - name: Upload build artifact (build folder)
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:

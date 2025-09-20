@@ -22,7 +22,7 @@
 
 using json = nlohmann::json;
 
-// Return current time in ISO-8601 UTC with milliseconds
+// Return current UTC time in ISO-8601 with milliseconds, e.g. 2025-09-20T12:34:56.789Z
 static std::string iso8601_utc_now() {
     using namespace std::chrono;
     auto now = system_clock::now();
@@ -43,7 +43,7 @@ static std::string iso8601_utc_now() {
     return oss.str();
 }
 
-// Get system hostname (best-effort)
+// Best-effort hostname
 static std::string get_hostname() {
 #ifdef _WIN32
     CHAR buffer[256];
@@ -80,49 +80,81 @@ static CliOptions parse_cli(int argc, char** argv) {
 int main(int argc, char** argv) {
     auto opts = parse_cli(argc, argv);
 
-    spdlog::info("SentinelAgent starting");
+    spdlog::info("Sentinel starting");
     spdlog::info("Policy: {}", opts.policy_path);
 
-    // Load policy
-    std::ifstream ifs(opts.policy_path);
-    if (!ifs.is_open()) {
-        spdlog::error("Cannot open policy: {}", opts.policy_path);
-        std::cerr << "Cannot open policy: " << opts.policy_path << std::endl;
-        return 1;
-    }
-
+    // Load policy JSON
     json policy;
-    try {
-        ifs >> policy;
-    } catch (const std::exception& e) {
-        spdlog::error("Failed to parse policy JSON: {}", e.what());
+    {
+        std::ifstream ifs(opts.policy_path);
+        if (!ifs.is_open()) {
+            spdlog::error("Cannot open policy: {}", opts.policy_path);
+            std::cerr << "Cannot open policy: " << opts.policy_path << std::endl;
+            return 1;
+        }
+
+        try {
+            ifs >> policy;
+        } catch (const std::exception& e) {
+            spdlog::error("Failed to parse policy JSON: {}", e.what());
+            std::cerr << "Failed to parse policy JSON: " << e.what() << std::endl;
+            return 1;
+        }
+    }
+
+    // Basic policy validation
+    if (!policy.contains("rules") || !policy["rules"].is_array()) {
+        spdlog::error("Policy missing 'rules' array");
+        std::cerr << "Policy missing 'rules' array" << std::endl;
         return 1;
     }
 
-    // Evaluate rules
     json outcomes = json::object();
-    try {
-        for (const auto& rule : policy.at("rules")) {
+
+    // Evaluate each rule
+    for (const auto& rule : policy["rules"]) {
+        try {
+            if (!rule.contains("id") || !rule.contains("query") || !rule.contains("lua")) {
+                spdlog::warn("Skipping rule with missing fields: {}", rule.dump(0));
+                continue;
+            }
+
             const std::string id = rule.at("id").get<std::string>();
             const std::string query = rule.at("query").get<std::string>();
             const std::string luacode = rule.at("lua").get<std::string>();
 
             spdlog::info("Running osquery for rule {}: {}", id, query);
-            json results = run_osquery_json(query);
+            // run_osquery_json throws on internal errors; returns JSON array on success
+            json results;
+            try {
+                results = run_osquery_json(query);
+            } catch (const std::exception& e) {
+                spdlog::error("osquery error for rule {}: {}", id, e.what());
+                outcomes[id] = false;
+                std::cout << id << ": FAIL" << std::endl;
+                continue; // move to next rule
+            }
 
             bool pass = eval_lua_against_json(luacode, results);
             outcomes[id] = pass;
 
             spdlog::info("{} -> {}", id, (pass ? "PASS" : "FAIL"));
             std::cout << id << ": " << (pass ? "PASS" : "FAIL") << std::endl;
+        } catch (const std::exception& e) {
+            spdlog::error("Exception while evaluating a rule: {}", e.what());
+        } catch (...) {
+            spdlog::error("Unknown exception while evaluating a rule");
         }
-    } catch (const std::exception& e) {
-        spdlog::error("Error while evaluating rules: {}", e.what());
-        return 1;
     }
 
-    // Compute score and build report
-    int score = compute_score(policy, outcomes);
+    // Compute score and assemble report
+    int score = 0;
+    try {
+        score = compute_score(policy, outcomes);
+    } catch (const std::exception& e) {
+        spdlog::error("Failed to compute score: {}", e.what());
+        score = 0;
+    }
 
     json report = {
         {"policy", policy.value("policy_name", std::string("unnamed"))},
@@ -132,10 +164,10 @@ int main(int argc, char** argv) {
         {"hostname", get_hostname()}
     };
 
-    // Print report to stdout (pretty)
+    // Print report to stdout
     std::cout << report.dump(2) << std::endl;
 
-    // Persist report to file if requested
+    // Persist report file (best-effort)
     try {
         std::ofstream ofs(opts.report_path);
         if (ofs) {
@@ -154,22 +186,22 @@ int main(int argc, char** argv) {
         DB db("sentinel_data.sqlite3");
         db.init_schema();
 
-        // Create a flat details object from outcomes (keeps booleans as-is)
         json details_flat = json::object();
         for (auto it = outcomes.begin(); it != outcomes.end(); ++it) {
             details_flat[it.key()] = it.value();
         }
 
-        std::string ts = report.value("timestamp", std::string(""));
-        std::string host = report.value("hostname", std::string("unknown-host"));
-        std::string policy_name = report.value("policy", std::string(""));
+        db.persist_run(report.value("timestamp", std::string("")),
+                       report.value("hostname", std::string("unknown-host")),
+                       report.value("policy", std::string("")),
+                       report.value("score", 0),
+                       details_flat);
 
-        db.persist_run(ts, host, policy_name, report.value("score", 0), details_flat);
         spdlog::info("Persisted run to sentinel_data.sqlite3");
     } catch (const std::exception& e) {
         spdlog::error("Failed to persist run to DB: {}", e.what());
     }
 
-    spdlog::info("SentinelAgent finished, score={}", score);
+    spdlog::info("Sentinel finished, score={}", score);
     return 0;
 }
