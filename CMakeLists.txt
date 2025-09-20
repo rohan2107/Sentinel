@@ -1,10 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
-project(SentinelAgent LANGUAGES CXX)
+project(Sentinel LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# vcpkg toolchain
+# vcpkg toolchain (optional, preserved)
 if(NOT DEFINED CMAKE_TOOLCHAIN_FILE AND EXISTS "C:/vcpkg/scripts/buildsystems/vcpkg.cmake")
   set(CMAKE_TOOLCHAIN_FILE "C:/vcpkg/scripts/buildsystems/vcpkg.cmake" CACHE STRING "Vcpkg toolchain file")
 endif()
@@ -32,7 +32,7 @@ endif()
 # SQLite (vcpkg exposes unofficial-sqlite3)
 find_package(unofficial-sqlite3 CONFIG REQUIRED)
 
-add_executable(SentinelAgent
+add_executable(Sentinel
   src/main.cpp
   src/osquery_runner.cpp
   src/lua_evaluator.cpp
@@ -40,9 +40,9 @@ add_executable(SentinelAgent
   src/db.cpp
 )
 
-target_include_directories(SentinelAgent PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(Sentinel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
-target_link_libraries(SentinelAgent PRIVATE
+target_link_libraries(Sentinel PRIVATE
   nlohmann_json::nlohmann_json
   spdlog::spdlog
   sol2::sol2

@@ -1,20 +1,27 @@
 {
-  "policy_name": "sample-default",
+  "policy_name": "sample-default-windows",
   "base_score": 100,
   "rules": [
     {
       "id": "firewall_enabled",
-      "desc": "Windows Firewall should be enabled",
-      "query": "SELECT * FROM firewall_rules WHERE active=1;",
-      "lua": "return (#results > 0) and (results[1].active == 1)",
+      "desc": "Windows Firewall should be enabled (at least one firewall product/state=On)",
+      "query": "SELECT name, state, type FROM windows_security_products WHERE type = 'Firewall' LIMIT 5;",
+      "lua": "if #results == 0 then return false end\nfor i=1,#results do\n  local s = results[i].state or \"\"\n  s = string.lower(tostring(s))\n  if s == \"on\" or s == \"1\" or tonumber(s) == 1 then return true end\nend\nreturn false",
       "weight": 20
     },
     {
       "id": "av_installed",
-      "desc": "Antivirus product present",
-      "query": "SELECT name FROM anti_virus WHERE name IS NOT NULL;",
-      "lua": "return #results > 0",
+      "desc": "Antivirus/security product present and enabled",
+      "query": "SELECT name, state, signatures_up_to_date, type FROM windows_security_products WHERE type = 'Antivirus' LIMIT 10;",
+      "lua": "if #results == 0 then return false end\nfor i=1,#results do\n  local s = results[i].state or \"\"\n  s = string.lower(tostring(s))\n  if s == \"on\" or s == \"1\" or tonumber(s) == 1 then return true end\n  -- fallback: treat signature presence as a sign of an installed AV\n  local sig = results[i].signatures_up_to_date or \"\"\n  if sig == \"1\" or tonumber(sig) == 1 then return true end\nend\nreturn false",
       "weight": 30
+    },
+    {
+      "id": "security_center_status",
+      "desc": "Windows Security Center overall status (firewall/antivirus should be Good)",
+      "query": "SELECT antivirus, firewall, autoupdate FROM windows_security_center LIMIT 1;",
+      "lua": "if #results == 0 then return false end\nlocal r = results[1]\nlocal function ok(val)\n  if val == nil then return false end\n  local s = string.lower(tostring(val))\n  return s == \"good\" or s == \"on\" or s == \"1\" or tonumber(s) and tonumber(s) ~= 0\nend\nreturn ok(r.antivirus) and ok(r.firewall)",
+      "weight": 25
     }
   ]
 }

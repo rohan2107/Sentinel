@@ -1,47 +1,73 @@
+// src/osquery_runner.cpp
 #include "osquery_runner.h"
-#include <array>
-#include <cstdio>
 #include <stdexcept>
+#include <sstream>
+#include <array>
+#include <memory>
+#include <cstdio>
+
+#ifdef _WIN32
+#  define POPEN _popen
+#  define PCLOSE _pclose
+#else
+#  define POPEN popen
+#  define PCLOSE pclose
+#endif
 
 using json = nlohmann::json;
 
-static std::string popen_read_all(const std::string& cmd) {
-#ifdef _WIN32
-    FILE* pipe = _popen(cmd.c_str(), "r");
-    if (!pipe) throw std::runtime_error("popen failed");
-    std::array<char, 256> buf{};
+static std::string escape_shell_quotes(const std::string& s) {
+    // Keep simple: on Windows double quotes are used; on Unix we wrap in single quotes later.
+    // We will build a command that uses double quotes for osqueryi --json "<query>"
     std::string out;
-    while (fgets(buf.data(), (int)buf.size(), pipe)) out += buf.data();
-    _pclose(pipe);
-#else
-    FILE* pipe = popen(cmd.c_str(), "r");
-    if (!pipe) throw std::runtime_error("popen failed");
-    std::array<char, 256> buf{};
-    std::string out;
-    while (fgets(buf.data(), buf.size(), pipe)) out += buf.data();
-    pclose(pipe);
-#endif
+    out.reserve(s.size() * 2);
+    for (char c : s) {
+        if (c == '\"') {
+            out += '\\';
+            out += '"';
+        } else {
+            out += c;
+        }
+    }
     return out;
 }
 
-static json simulate_query(const std::string& sql) {
-    if (sql.find("firewall_rules") != std::string::npos) {
-        return json::array({ {{"name","DemoRule"},{"active",1}} });
-    }
-    if (sql.find("anti_virus") != std::string::npos) {
-        return json::array({ {{"name","Windows Defender"}} });
-    }
-    return json::array();
-}
+json run_osquery_json(const std::string& sql_query) {
+    // Construct command: osqueryi --json "<query>"
+    std::ostringstream cmd;
+#ifdef _WIN32
+    // windows: use double quotes
+    cmd << "osqueryi --json \"" << escape_shell_quotes(sql_query) << "\"";
+#else
+    // unix: wrap in single quotes to avoid shell interpolation; single quotes inside query are rare for SQL
+    // if needed, users can escape single quotes in policy queries by doubling them.
+    cmd << "osqueryi --json '" << sql_query << "'";
+#endif
 
-json run_osquery_json(const std::string& sql, bool simulate) {
-    if (simulate) return simulate_query(sql);
-    std::string cmd = "osqueryi --json \"" + sql + "\"";
+    std::array<char, 4096> buffer;
+    std::string result;
+
+    FILE* pipe = POPEN(cmd.str().c_str(), "r");
+    if (!pipe) {
+        throw std::runtime_error("Failed to run osqueryi (is it installed and on PATH?)");
+    }
+
+    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
+        result += buffer.data();
+    }
+
+    int rc = PCLOSE(pipe);
+    (void)rc;
+
     try {
-        std::string out = popen_read_all(cmd);
-        if (out.empty()) return json::array();
-        return json::parse(out);
-    } catch (...) {
-        return json::array();
+        if (result.empty()) {
+            return json::array();
+        }
+        json parsed = json::parse(result);
+        return parsed;
+    } catch (const std::exception& e) {
+        std::ostringstream oss;
+        oss << "osqueryi returned invalid JSON: " << e.what() << "\nraw output:\n" << result;
+        throw std::runtime_error(oss.str());
     }
 }

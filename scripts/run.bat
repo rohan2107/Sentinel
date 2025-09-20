@@ -1,37 +1,59 @@
 @echo off
-REM scripts\run.bat  -- meant to be run from repo root: ...\Sentinel>
+REM scripts\run.bat
+REM Usage: run.bat [policy_path] [Debug|Release]
+REM Default policy: policies\sample_policy.json
+REM Default build config: Debug
 
 setlocal
 
-REM Usage: scripts\run.bat [--no-simulate] [policy_path]
+set "PROJECT_ROOT=%~dp0.."
+set "POLICY=%PROJECT_ROOT%\policies\sample_policy.json"
+set "BUILD_TYPE=Debug"
 
-REM default policy (relative to repo root)
-set "POLICY=policies\sample_policy.json"
-set "FLAG=--simulate"
-
-REM parse args
-if "%~1"=="" goto :run
-if "%~1"=="--no-simulate" (
-    set "FLAG=--no-simulate"
-    if not "%~2"=="" set "POLICY=%~2"
-) else (
+REM parse args:
+if not "%~1"=="" (
     set "POLICY=%~1"
 )
+if not "%~2"=="" (
+    set "BUILD_TYPE=%~2"
+)
 
-:run
-REM exe path (relative to repo root)
-set "EXE=build\Debug\SentinelAgent.exe"
+REM normalize backslashes
+set "POLICY=%POLICY:/=\%"
+
+echo Using policy: %POLICY%
+echo Build type: %BUILD_TYPE%
+
+REM Check for osqueryi on PATH (quick sanity check)
+where osqueryi >nul 2>&1
+if errorlevel 1 (
+    echo WARNING: osqueryi was not found on PATH. Make sure osquery is installed and osqueryi.exe is reachable.
+) else (
+    for /f "tokens=*" %%i in ('where osqueryi') do set "OSQUERY_PATH=%%i"
+    echo Found osqueryi: %OSQUERY_PATH%
+)
+
+REM compute exe path depending on build type
+if /I "%BUILD_TYPE%"=="Release" (
+    set "EXE=%PROJECT_ROOT%\build\Release\Sentinel.exe"
+) else (
+    set "EXE=%PROJECT_ROOT%\build\Debug\Sentinel.exe"
+)
 
 if not exist "%EXE%" (
     echo ERROR: executable not found: "%EXE%"
+    echo Run scripts\build.bat %BUILD_TYPE% first.
+    endlocal
     exit /b 1
 )
 
 if not exist "%POLICY%" (
     echo ERROR: policy file not found: "%POLICY%"
+    endlocal
     exit /b 1
 )
 
-"%EXE%" --policy "%POLICY%" %FLAG%
+REM Run the executable (no simulate flag)
+"%EXE%" --policy "%POLICY%"
 
 endlocal

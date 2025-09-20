@@ -22,9 +22,7 @@
 
 using json = nlohmann::json;
 
-// --- Helpers -----------------------------------------------------------------
-
-// Return current time in ISO-8601 UTC with milliseconds, e.g. "2025-09-05T16:30:05.123Z"
+// Return current time in ISO-8601 UTC with milliseconds
 static std::string iso8601_utc_now() {
     using namespace std::chrono;
     auto now = system_clock::now();
@@ -45,7 +43,7 @@ static std::string iso8601_utc_now() {
     return oss.str();
 }
 
-// Get system hostname (best-effort). Returns "unknown-host" when unavailable.
+// Get system hostname (best-effort)
 static std::string get_hostname() {
 #ifdef _WIN32
     CHAR buffer[256];
@@ -59,10 +57,8 @@ static std::string get_hostname() {
 #endif
 }
 
-// Simple CLI parsing for our small set of flags
 struct CliOptions {
     std::string policy_path = "policies/sample_policy.json";
-    bool simulate = true;
     std::string report_path = "reports/latest_report.json";
 };
 
@@ -72,10 +68,6 @@ static CliOptions parse_cli(int argc, char** argv) {
         std::string a = argv[i];
         if (a == "--policy" && i + 1 < argc) {
             opts.policy_path = argv[++i];
-        } else if (a == "--simulate") {
-            opts.simulate = true;
-        } else if (a == "--no-simulate") {
-            opts.simulate = false;
         } else if (a == "--report-path" && i + 1 < argc) {
             opts.report_path = argv[++i];
         } else {
@@ -85,12 +77,10 @@ static CliOptions parse_cli(int argc, char** argv) {
     return opts;
 }
 
-// --- main --------------------------------------------------------------------
-
 int main(int argc, char** argv) {
     auto opts = parse_cli(argc, argv);
 
-    spdlog::info("SentinelAgent starting (simulate={})", opts.simulate);
+    spdlog::info("SentinelAgent starting");
     spdlog::info("Policy: {}", opts.policy_path);
 
     // Load policy
@@ -117,7 +107,9 @@ int main(int argc, char** argv) {
             const std::string query = rule.at("query").get<std::string>();
             const std::string luacode = rule.at("lua").get<std::string>();
 
-            json results = run_osquery_json(query, opts.simulate);
+            spdlog::info("Running osquery for rule {}: {}", id, query);
+            json results = run_osquery_json(query);
+
             bool pass = eval_lua_against_json(luacode, results);
             outcomes[id] = pass;
 
@@ -168,7 +160,6 @@ int main(int argc, char** argv) {
             details_flat[it.key()] = it.value();
         }
 
-        // Use value() with defaults to avoid null exceptions
         std::string ts = report.value("timestamp", std::string(""));
         std::string host = report.value("hostname", std::string("unknown-host"));
         std::string policy_name = report.value("policy", std::string(""));
