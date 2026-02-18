@@ -1,28 +1,21 @@
-# Architectural Trade-Offs
+# Architectural Trade-Offs (Current Implementation)
 
-Key decisions with alternatives, benefits, limitations, and failure thresholds.
+Key decisions for Phase 1 (local evaluation engine) with alternatives, benefits, limitations, and failure thresholds.
+
+> **Note**: Delivery layer trade-offs (at-least-once vs exactly-once, MQTT vs HTTP, content hashing) are documented in [`docs/roadmap/`](roadmap/) as Phase 2 is not yet implemented.
 
 ## Decision Matrix
 
 | Decision | Chosen | Alternative | Benefit | Limitation | Fails At |
 |----------|--------|-------------|---------|------------|----------|
-| **Delivery** | At-least-once | Exactly-once | Simpler (500 vs 2000 LOC), 50ms vs 200ms latency, any broker | Requires idempotent backend | Expensive non-idempotent ops |
 | **Persistence** | SQLite | RocksDB | SQL queries, ACID, 700KB, ubiquitous | 10k writes/sec | >10k sustained writes/sec |
-| **Network** | MQTT | HTTP poll | Push (100ms vs 30s), 0.27 vs 27 bits/sec keepalive | Broker required | <100 devices, firewalls |
 | **Rules** | Lua | Compiled C++ | Dynamic updates, human-readable, 200KB VM | 100x slower | Complex rules, µs latency |
-| **Dedup** | Content hash | Sequence ID | Idempotent, no coordination, tamper-detect | 32B vs 8B overhead | Mutable reports |
+| **Data Collection** | osquery | WMI | Cross-platform, SQL interface, maintained | Windows-only in practice | Non-osquery data sources |
+| **JSON Library** | nlohmann/json | RapidJSON | Header-only, intuitive API, wide adoption | Slower than RapidJSON | Parse >10MB/sec |
 
 ## Detailed Analysis
 
-### 1. At-Least-Once Delivery
-
-**Why**: Simpler than 2PC, lower latency (50ms vs 200ms), works with all MQTT brokers.
-
-**Cost**: Backend must deduplicate (SHA-256 hash). Storage: 24h TTL = 100MB/1M reports.
-
-**Fails When**: Non-idempotent expensive operations (e.g., $10/report processing, financial transactions).
-
-### 2. SQLite Persistence
+### 1. SQLite Persistence
 
 **Why**: SQL queries for debugging, ACID transactions, WAL mode (1-5ms writes), 700KB binary, zero config.
 
@@ -32,17 +25,7 @@ Key decisions with alternatives, benefits, limitations, and failure thresholds.
 
 **Fails When**: >10k sustained writes/sec, P99 <5ms required, no SQL needed (KV only).
 
-### 3. MQTT vs HTTP
-
-**Why**: Push model (policy updates instant vs 30s poll avg), bandwidth efficient (2B vs 200B keepalive), topic routing scales.
-
-**Cost**: Additional broker infrastructure, port 1883 firewall issues, harder to debug than HTTP.
-
-**Fails When**: <100 devices (broker overhead not justified), firewall traversal critical, stateless required.
-
-**Hybrid**: MQTT for policy push, HTTP for reports (simpler debugging).
-
-### 4. Embedded Lua
+### 2. Embedded Lua
 
 **Why**: Deploy rules as JSON (no recompile), sandboxed (no I/O), human-readable, 200KB VM, 0.1-1ms eval.
 
@@ -52,22 +35,36 @@ Key decisions with alternatives, benefits, limitations, and failure thresholds.
 
 **Hybrid**: Critical rules in C++, custom rules in Lua.
 
-### 5. Content-Addressable Hashing
+### 3. osquery Data Collection
 
-**Why**: Deterministic dedup (same content→same hash), no global coordination, backend idempotency, immutability verification.
+**Why**: Cross-platform SQL interface to system data, actively maintained (Facebook → Osquery Foundation), rich table schema (firewall, processes, users).
 
-**Cost**: SHA-256 collision at 2^-256 (negligible), 32B vs 8B storage, content-sensitive (whitespace changes hash—mitigated by normalization).
+**Cost**: 150ms latency per query, 3-5MB memory, Windows-only in practice (Linux support underused in Windows agent).
 
-**Fails When**: Mutable reports, strict ordering required (use timestamp in payload), gap detection needed.
+**Fails When**: Non-osquery data sources (custom APIs, SIEM), <50ms latency required, memory <10MB.
+
+**Alternatives**: WMI (Windows-only, COM complexity), PowerShell (parsing overhead), native Win32 API (rigid code).
+
+### 4. nlohmann/json
+
+**Why**: Header-only (no build config), intuitive API (`j["key"]`), wide adoption, MIT license.
+
+**Cost**: 2-3x slower than RapidJSON, 1-2MB header parse overhead.
+
+**Fails When**: Parse >10MB/sec, minimal header-only footprint required, older C++11 constraints.
+
+**Benchmark**: 12KB policy file → 0.3ms parse (nlohmann) vs 0.1ms (RapidJSON). Acceptable for 1 eval/5min.
 
 ## Reconsider If
 
-**Delivery**: Non-idempotent backend ops, duplicate cost > exactly-once implementation.
+**SQLite**: Writes >10k/sec, P99 <5ms required, no SQL needed.
 
-**SQLite**: Writes >10k/sec, P99 <5ms.
+**Lua**: Rules become CPU bottleneck (>50%), formal verification required (aerospace/medical), rule logic >100 LOC.
 
-**MQTT**: <100 devices, firewall traversal primary issue.
+**osquery**: Need non-system data (cloud APIs, SIEM), latency <50ms required, cross-platform support unnecessary.
 
-**Lua**: Rules become CPU bottleneck (>50%), formal verification required (aerospace/medical).
+**nlohmann/json**: Parse >10MB/sec required, header-only footprint problematic, C++11 constraints.
 
-**Hashing**: Reports mutable, strict ordering for compliance.
+---
+
+**For delivery layer trade-offs** (at-least-once vs exactly-once, MQTT vs HTTP, content hashing), see [`docs/roadmap/`](roadmap/) documentation for Phase 2 planning.

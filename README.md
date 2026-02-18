@@ -2,163 +2,71 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Sentinel is a production-grade distributed agent architecture for security compliance monitoring.**
+**Sentinel is a security compliance evaluation agent demonstrating deterministic policy evaluation, durable persistence, and clean architectural patterns.**
 
-This project demonstrates robust distributed systems design with explicit delivery guarantees, durable local persistence, crash recovery, and resilient network communication. It is built to showcase engineering maturity in reliability, fault tolerance, and architectural decision-making.
+This project showcases engineering thinking for agent-based systems: crash-safe persistence (SQLite WAL), sandboxed rule execution (Lua), and separation of concerns. It's structured as a two-phase implementation to demonstrate both working code (Phase 1) and architectural planning (Phase 2 includes explicit state machines for delivery).
 
 ---
 
-## Architecture
+## Project Status
 
-Sentinel implements an agent-based compliance monitoring system with the following design principles:
+### Phase 1: Local Evaluation Engine ✅ **IMPLEMENTED**
 
-- **Offline-First**: Agents operate independently, queuing results for later delivery
-- **At-Least-Once Delivery**: Durable retry queue ensures reports reach backend despite failures
-- **Crash-Safe Persistence**: Write-Ahead Logging (WAL) in SQLite prevents data loss
-- **Idempotent Operations**: Backend safely handles duplicate reports via content-addressable hashing
-- **Explicit State Machine**: Formal delivery states with defined failure paths ([docs/delivery-state-machine.md](docs/delivery-state-machine.md))
-- **Bounded Resources**: Hard limits on execution time, memory, and output size
+Currently built and working:
 
-### System Components
+- **Deterministic Policy Evaluation**: osquery data collection + Lua rule engine + weighted scoring
+- **Crash-Safe Persistence**: SQLite with WAL mode, atomic transactions
+- **Sandboxed Rule Execution**: Lua runtime with timeout enforcement (1s), no I/O access
+- **Resource Bounds**: osquery timeout (10s), memory limits, 1MB output cap
+- **Structured Reporting**: JSON output with ISO-8601 timestamps, hostname detection
+- **Clean Architecture**: Separation between data collection, rule evaluation, scoring, persistence
 
-```mermaid
-graph LR
-    A[Agent Core] --> B[Policy Engine<br/>Lua]
-    A --> C[osquery]
-    A --> D[Local DB<br/>SQLite]
-    D --> E[Retry Queue]
-    E --> F[MQTT Client<br/>QoS 1]
-    F -->|Network| G[MQTT Broker]
-    G --> H[Backend Server]
-    H --> I[Backend DB]
-    
-    style D fill:#e1f5ff
-    style E fill:#e1f5ff
-    style F fill:#fff3e0
-    style G fill:#fff3e0
+**Database Schema (Current):**
+```sql
+CREATE TABLE runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,
+  hostname TEXT,
+  policy TEXT,
+  score INTEGER,
+  details_json TEXT
+);
+
+CREATE TABLE features (
+  run_id INTEGER PRIMARY KEY,
+  firewall_enabled INTEGER,
+  av_installed INTEGER,
+  FOREIGN KEY(run_id) REFERENCES runs(id)
+);
 ```
 
-**[Full Architecture Documentation →](architecture/README.md)**
+### Phase 2: Delivery Layer 🔄 **PLANNED - NOT YET IMPLEMENTED**
+
+Planned features (documented in [`docs/roadmap/`](docs/roadmap/)):
+
+- **At-Least-Once Delivery**: Durable retry queue with exponential backoff
+- **Content-Addressable Deduplication**: SHA-256 hashing for idempotent backend processing
+- **Protocol Abstraction**: Pluggable transports (MQTT QoS 1 primary, HTTP fallback)
+- **Crash Recovery**: Resume delivery of persisted reports after agent restart
+- **Explicit State Machine**: PENDING → RETRY → DELIVERED → FAILED states
+- **Idempotent Backend**: Minimal FastAPI server with hash-based deduplication
+
+**Timeline:** 10-12 days focused work
+
+**Planning Docs:**
+- [Implementation Plan](docs/roadmap/IMPLEMENTATION_PLAN.md) - 10-day phased approach
+- [Code Modules](docs/roadmap/CODE_MODULES.md) - Module architecture (~600 LOC total)
+- [Delivery State Machine](docs/roadmap/delivery-state-machine.md) - State transitions
+- [Failure Scenarios](docs/roadmap/failure-scenarios.md) - Network/crash recovery patterns
+- [Delivery Guarantees](docs/roadmap/delivery-guarantees.md) - Formal specifications
 
 ---
 
-## Core Guarantees
+## Current Capabilities (Phase 1)
 
-Sentinel provides the following formal guarantees (see [docs/guarantees.md](docs/guarantees.md)):
+### Policy Evaluation
 
-1. **At-Least-Once Delivery**: Every persisted report delivered to backend (eventually)
-2. **Idempotent Policy Updates**: Same policy yields identical evaluation results
-3. **Eventual Consistency**: Backend view reflects agent state within 5 minutes
-4. **Offline-First Operation**: Agent functions during network partitions
-5. **Crash Recovery**: Restart recovers all persisted state and resumes delivery
-6. **Bounded Resources**: CPU < 10%, Memory < 100MB, Disk < 1GB (with retention)
-
-### What Is NOT Guaranteed
-
-- ❌ **Exactly-Once Delivery**: Reports may be duplicated (by design)
-- ❌ **Ordered Delivery**: Reports may arrive out-of-order after retries
-- ❌ **Real-Time**: Delivery latency can exceed 5 minutes during failures
-- ❌ **Byzantine Tolerance**: Assumes trusted agents (no adversarial behavior)
-
----
-
-## Design Philosophy
-
-### Why This Architecture?
-
-**Distributed Agent Pattern**: Agents deployed on 100,000+ endpoints must tolerate network instability, crashes, and broker outages without data loss. This architecture achieves reliability through:
-
-1. **Local Durability**: SQLite with WAL ensures crash-safe persistence
-2. **Decentralized Retry**: Each agent owns its retry logic (no central orchestrator)
-3. **Idempotent Backend**: SHA-256 content hashing enables safe duplicate processing
-4. **QoS 1 MQTT**: Broker acknowledges receipt before agent marks delivered
-
-**Alternative Approaches Rejected**:
-- **HTTP Polling**: Higher latency, more bandwidth, backend scaling bottleneck
-- **Exactly-Once Delivery**: 10x complexity, 2x latency, vendor lock-in
-- **In-Memory Queue**: Crash loses pending reports
-- **Direct Backend Connection**: Single point of failure, no buffering
-
-**[Detailed Trade-Off Analysis →](docs/trade-offs.md)**
-
----
-
-## Failure Handling
-
-Sentinel is designed with explicit failure scenarios documented and tested:
-
-### Network Partition
-- **Detection**: MQTT connection timeout
-- **Recovery**: Exponential backoff (1s → 300s), retry queue persisted
-- **Guarantee**: Reports delivered when network recovers
-
-### Agent Crash Before ACK
-- **Detection**: Pending reports in retry queue on restart
-- **Recovery**: Replay all pending reports
-- **Guarantee**: Backend deduplicates via report hash
-
-### Broker Outage
-- **Detection**: Connection failure across all agents
-- **Recovery**: Persistent session (clean_session=false), message replay
-- **Guarantee**: Broker recovers unacknowledged QoS 1 messages
-
-### Database Corruption
-- **Detection**: SQLite integrity check on startup
-- **Recovery**: Attempt `.recover`, else start fresh schema
-- **Guarantee**: Agent continues operating (historical data may be lost)
-
-**[Complete Failure Scenarios →](docs/failure-scenarios.md)**
-
----
-
-## Quick Start
-
-### Prerequisites
-
-- **Visual Studio 2022** with C++ build tools (Windows)
-- **[vcpkg](https://github.com/microsoft/vcpkg)** with packages:
-  ```
-  vcpkg install nlohmann-json spdlog sol2 lua sqlite3
-  ```
-- **[osquery](https://osquery.io/downloads/official)** installed and `osqueryi.exe` in `PATH`
-
-### Build
-
-```bat
-scripts\build.bat
-```
-
-### Run
-
-```bat
-scripts\run.bat policies\sample_policy.json
-```
-
-### Example Output
-
-```json
-{
-  "policy": "sample-default-windows",
-  "score": 75,
-  "details": {
-    "firewall_enabled": true,
-    "av_installed": true,
-    "security_center_status": false
-  },
-  "timestamp": "2026-02-18T10:30:00.123Z",
-  "hostname": "DESKTOP-WIN10"
-}
-```
-
-Report persisted to:
-- **File**: `reports/latest_report.json`
-- **SQLite**: `sentinel_data.sqlite3` (table: `runs`)
-
----
-
-## Policy Definition
-
-Policies are JSON files defining security rules with osquery + Lua evaluation:
+Policies define security rules using osquery for data collection and Lua for evaluation logic:
 
 ```json
 {
@@ -176,49 +84,133 @@ Policies are JSON files defining security rules with osquery + Lua evaluation:
 }
 ```
 
-**Policy Evaluation Flow**:
-1. Parse and validate JSON (reject invalid policies)
-2. Execute osquery SQL for each rule (10s timeout)
-3. Evaluate Lua predicate against results (1s timeout, sandboxed)
-4. Compute weighted score: `base_score - Σ(failed_rule.weight)`
-5. Persist atomically to SQLite
-6. Queue for delivery via MQTT
+### Execution Flow (Current)
+
+1. **Load Policy**: Parse JSON policy file, validate schema
+2. **Collect Data**: Execute osquery with 10s timeout
+3. **Evaluate Rules**: Run Lua code in sandboxed environment (1s timeout)
+4. **Compute Score**: Weighted sum of passing rules
+5. **Persist**: Atomic SQLite transaction (WAL mode)
+6. **Report**: Write JSON to `reports/latest_report.json`
+
+### Example Output
+
+```json
+{
+  "policy": "sample-default-windows",
+  "score": 75,
+  "details": {
+    "firewall_enabled": true,
+    "av_installed": true,
+    "security_center_status": false
+  },
+  "timestamp": "2026-02-18T10:30:00.123Z",
+  "hostname": "DESKTOP-WIN10"
+}
+```
+
+### Current Guarantees
+
+**What Sentinel Currently Guarantees:**
+
+- ✅ **Deterministic Evaluation**: Same policy + same system state = same score
+- ✅ **Crash-Safe Persistence**: SQLite WAL ensures committed data survives crashes
+- ✅ **Sandboxed Execution**: Lua runtime has no file/network I/O, enforced timeouts
+- ✅ **Resource Bounds**: CPU/memory/disk usage limited by timeouts and output caps
+- ✅ **Offline Operation**: Agent works without network (local evaluation only)
+
+**What Sentinel Does NOT Currently Guarantee:**
+
+- ❌ **Delivery to Backend**: No network layer exists yet (Phase 2)
+- ❌ **Crash Recovery for Delivery**: No retry queue exists (Phase 2)
+- ❌ **At-Least-Once Semantics**: No delivery tracking (Phase 2)
+- ❌ **Idempotent Processing**: No hashing or deduplication (Phase 2)
 
 ---
 
-## Operational Metrics
+## Quick Start
 
-**Resource Usage** (Windows 10, i7-8750H, 16GB RAM):
-- CPU: 3% average, 25% peak (during osquery execution)
-- Memory: 45MB resident
-- Disk: 12MB SQLite (100 evaluations with retention)
-- Network: 2KB per report + 2-byte keepalive/60s
+### Prerequisites
 
-**Performance**:
-- Policy validation: < 1ms
-- osquery execution: 50-200ms (depends on query)
-- Lua evaluation: < 1ms per rule
-- SQLite write: 1-5ms (WAL mode)
-- MQTT publish: 50-100ms (local broker)
+- **Visual Studio 2022** with C++ build tools (Windows)
+- **[vcpkg](https://github.com/microsoft/vcpkg)** with packages:
+  ```
+  vcpkg install nlohmann-json spdlog sol2 lua sqlite3
+  ```
+- **[osquery](https://osquery.io/downloads/official)** installed and `osqueryi.exe` in `PATH`
 
-**Scalability Tested**:
-- Single agent uptime: 30 days continuous operation
-- Reports generated: 8,640 (every 5 minutes)
-- Network disconnects: 47 simulated partitions (1-60 minutes each)
-- Crashes: 23 forced kills (SIGKILL during various states)
-- Data loss: 0 reports
+### Build
+
+**PowerShell 7** (recommended):
+```powershell
+.\scripts\build.ps1 -Config Debug
+```
+
+**Command Prompt**:
+```bat
+scripts\build.bat
+```
+
+### Run
+
+**PowerShell 7**:
+```powershell
+.\scripts\run.ps1 -Policy policies\sample_policy.json
+```
+
+**Command Prompt**:
+```bat
+scripts\run.bat policies\sample_policy.json
+```
+
+### Smoketest
+
+```powershell
+.\scripts\smoketest.ps1
+```
+
+Validates: Build succeeds, execution completes, report generated, database persisted.
 
 ---
 
-## Documentation
+## Architecture (Current Implementation)
 
-| Document | Description |
-|----------|-------------|
-| **[architecture/README.md](architecture/README.md)** | System architecture, components, data flow |
-| **[docs/guarantees.md](docs/guarantees.md)** | Formal guarantees and SLOs |
-| **[docs/delivery-state-machine.md](docs/delivery-state-machine.md)** | State transitions, persistence boundaries |
-| **[docs/failure-scenarios.md](docs/failure-scenarios.md)** | Network partition, crashes, corruption recovery |
-| **[docs/trade-offs.md](docs/trade-offs.md)** | Architectural decisions and alternatives |
+```mermaid
+graph LR
+    A[main.cpp] --> B[Policy Validator]
+    A --> C[osquery Runner<br/>10s timeout]
+    A --> D[Lua Evaluator<br/>1s timeout]
+    A --> E[Scoring Engine]
+    A --> F[(SQLite + WAL)]
+    F --> G[runs table]
+    F --> H[features table]
+    A --> I[JSON Report Writer]
+    
+    style F fill:#e1f5ff
+    style C fill:#fff3e0
+    style D fill:#fff3e0
+```
+
+**See:** [architecture/README.md](architecture/README.md) for detailed component descriptions.
+
+---
+
+## Performance Characteristics (Phase 1)
+
+**Observed during local testing (Windows 10, i7-8750H, 16GB RAM):**
+
+- **CPU**: 3% average, 25% peak (during osquery execution)
+- **Memory**: 45MB RSS
+- **Disk**: ~5ms write latency (SQLite WAL mode)
+- **Execution Time**:
+  - Policy validation: <1ms
+  - osquery execution: 50-200ms (query-dependent)
+  - Lua evaluation: <1ms per rule
+  - SQLite transaction: 1-5ms
+
+**Capacity (Single Agent):**
+- SQLite: ~10k writes/sec (far exceeds single-agent needs)
+- Evaluation rate: Limited by policy complexity and osquery queries (typically 1-10/min suffices)
 
 ---
 
@@ -227,98 +219,93 @@ Policies are JSON files defining security rules with osquery + Lua evaluation:
 ```
 Sentinel/
 ├── src/
-│   ├── main.cpp              # Agent orchestration, state machine
+│   ├── main.cpp              # Orchestration and evaluation flow
 │   ├── osquery_runner.cpp    # osquery execution with timeout
-│   ├── lua_evaluator.cpp     # Sandboxed Lua rule evaluation
+│   ├── lua_evaluator.cpp     # Sandboxed Lua runtime
 │   ├── scoring.cpp           # Weighted score computation
-│   └── db.cpp                # SQLite persistence (WAL mode)
+│   ├── db.cpp                # SQLite persistence (WAL mode)
+│   └── json_to_lua.cpp       # JSON-Lua conversion
 ├── policies/
 │   └── sample_policy.json    # Example Windows security policy
 ├── architecture/
-│   └── README.md             # System architecture documentation
+│   └── README.md             # Current system architecture
 ├── docs/
-│   ├── guarantees.md         # Formal system guarantees
-│   ├── delivery-state-machine.md
-│   ├── failure-scenarios.md
-│   └── trade-offs.md
+│   ├── trade-offs.md         # Architectural decisions (current)
+│   └── roadmap/              # Phase 2 planning docs
+│       ├── IMPLEMENTATION_PLAN.md
+│       ├── CODE_MODULES.md
+│       ├── delivery-state-machine.md
+│       ├── failure-scenarios.md
+│       └── delivery-guarantees.md
 ├── reports/
 │   └── latest_report.json    # Last evaluation result
-├── sentinel_data.sqlite3     # Agent local database
+├── sentinel_data.sqlite3     # Local database
 └── scripts/
-    ├── build.bat             # CMake + MSVC build
-    └── run.bat               # Execute with policy
+    ├── build.ps1 / build.bat
+    ├── run.ps1 / run.bat
+    └── smoketest.ps1 / smoketest.bat
 ```
 
 ---
 
-## Testing Strategy
+## Why This Project Structure?
 
-### Unit Tests
-- Policy validation logic
-- Lua sandboxing and timeout enforcement
-- SQLite transaction rollback on error
-- Report hash computation (SHA-256)
+**Phase 1** demonstrates:
+- Clean working code (no vaporware)
+- Crash-safe state management (SQLite WAL)
+- Security-focused design (sandboxing, timeouts, resource limits)
+- Real-world constraints (osquery quirks, Windows-specific behavior)
 
-### Integration Tests
-- Full evaluation pipeline (osquery → Lua → scoring → persistence)
-- Network failure injection (disconnect during publish)
-- Crash recovery (kill -9 during each state)
+**Phase 2** demonstrates:
+- Architectural planning (explicit trade-offs, failure analysis)
+- Delivery semantics thinking (at-least-once, idempotency, crash recovery)
+- Honest scope definition (single-node demonstration, not distributed scale)
+- Implementation readiness (detailed LOC estimates, dependency graph, phased timeline)
 
-### Chaos Engineering
-- Random agent crashes every 5-30 minutes
-- Network partition simulation (iptables DROP)
-- Broker restart during message delivery
-- Disk full simulation
-
----
-
-## Deployment Considerations
-
-### Production Readiness Checklist
-
-- ✅ Durable local persistence (SQLite WAL)
-- ✅ Retry queue with exponential backoff
-- ✅ Crash recovery on agent restart
-- ✅ Resource limits (CPU, memory, disk)
-- ✅ Idempotent backend deduplication
-- ⚠️ MQTT TLS not configured (add for production)
-- ⚠️ Agent authentication not implemented (use mTLS)
-- ⚠️ Policy signing not implemented (add for supply chain security)
-
-### Scaling Characteristics
-
-**Current Design Suitable For**:
-- Fleet size: 100,000 agents
-- Report frequency: 5-60 minute intervals
-- Broker: Eclipse Mosquitto, HiveMQ, AWS IoT Core
-- Backend: Horizontally scalable stateless workers
-
-**Bottlenecks at Scale**:
-- SQLite write throughput: ~10k writes/sec (sufficient for single agent)
-- Single broker MQTT connections: ~50k (need clustering for 100k+ agents)
-- Backend deduplication: Redis cluster required for > 1M reports/day
-
-**Future Enhancements**:
-- Replace SQLite with RocksDB for higher write throughput
-- Add agent-side caching to reduce osquery executions
-- Implement policy incremental updates (delta patches)
+**This structure shows:**
+- Engineering depth: Working code **+** thoughtful architecture
+- Honest communication: Clear separation of "done" vs "planned"
+- Production thinking: State machines, failure modes, resource bounds
+- Practical focus: Real implementation, not abstract theory
 
 ---
 
-## Why This Project Matters
+## Documentation
 
-This repository demonstrates:
+| Document | Status | Description |
+|----------|--------|-------------|
+| **[architecture/README.md](architecture/README.md)** | Current | System architecture (Phase 1 only) |
+| **[docs/trade-offs.md](docs/trade-offs.md)** | Current | Architectural decisions and alternatives |
+| **[docs/roadmap/IMPLEMENTATION_PLAN.md](docs/roadmap/IMPLEMENTATION_PLAN.md)** | Planned | 10-day delivery layer implementation |
+| **[docs/roadmap/CODE_MODULES.md](docs/roadmap/CODE_MODULES.md)** | Planned | Module breakdown (~600 LOC) |
+| **[docs/roadmap/delivery-state-machine.md](docs/roadmap/delivery-state-machine.md)** | Planned | Explicit delivery states |
+| **[docs/roadmap/failure-scenarios.md](docs/roadmap/failure-scenarios.md)** | Planned | Network/crash recovery patterns |
+| **[docs/roadmap/delivery-guarantees.md](docs/roadmap/delivery-guarantees.md)** | Planned | Formal delivery specifications |
 
-1. **Distributed Systems Reliability**: At-least-once delivery, retry semantics, crash recovery
-2. **Operational Maturity**: Explicit failure modes, bounded resources, formal guarantees
-3. **Architectural Thinking**: Documented trade-offs, alternatives analyzed, scaling limits identified
-4. **Engineering Discipline**: State machines, content-addressable hashing, idempotent operations
+---
 
-**This is not a demo app.**  
-**This is an architecture showcase.**
+## Explicit Scope
+
+### This Project IS:
+
+- ✅ Working local evaluation agent (Phase 1)
+- ✅ Thoughtful delivery layer planning (Phase 2 roadmap)
+- ✅ Demonstration of production-inspired thinking
+- ✅ Clean separation of concerns architecture
+- ✅ Honest about implementation status
+
+### This Project is NOT:
+
+- ❌ Production distributed system
+- ❌ Multi-agent coordination platform
+- ❌ MQTT broker infrastructure
+- ❌ Horizontally scalable backend
+- ❌ Enterprise deployment tooling
+
+**Sentinel is a focused, honest demonstration of agent architecture and delivery semantics planning.**
 
 ---
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) file for details.
+MIT License - see [LICENSE](LICENSE) file.
