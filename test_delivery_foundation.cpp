@@ -1,12 +1,29 @@
 // Integration test for delivery foundation
 #include <iostream>
 #include <cassert>
+#include <chrono>
+#include <iomanip>
+#include <sstream>
 #include <nlohmann/json.hpp>
 #include "src/db.h"
 #include "src/report_hasher.h"
 #include "src/delivery_client.h"
 
 using json = nlohmann::json;
+
+// Helper function to compute future timestamp in ISO8601 format
+std::string get_future_timestamp(int hours_ahead) {
+    auto now = std::chrono::system_clock::now();
+    auto future = now + std::chrono::hours(hours_ahead);
+    auto future_time_t = std::chrono::system_clock::to_time_t(future);
+    
+    std::tm tm_utc;
+    gmtime_s(&tm_utc, &future_time_t);  // Windows-safe version
+    
+    std::ostringstream oss;
+    oss << std::put_time(&tm_utc, "%Y-%m-%d %H:%M:%S");
+    return oss.str();
+}
 
 void test_hash_determinism() {
     std::cout << "=== Testing Hash Determinism ===\n";
@@ -49,6 +66,8 @@ void test_mock_delivery() {
     
     assert(!result.success);
     assert(result.status_code == 500);
+    assert(!result.error_message.empty());
+    assert(result.error_message == "Mock delivery failure");
     assert(failure_client.get_call_count() == 1);
     std::cout << "[PASS] Mock client fails when configured to fail\n\n";
 }
@@ -117,8 +136,9 @@ void test_retry_queue() {
     assert(pending.size() == 1);
     std::cout << "[PASS] Second report enqueued\n";
     
-    // Simulate retry with backoff
-    db.update_retry(run_id2, 1, "2026-02-18T12:10:00.000Z", "Network timeout");
+    // Simulate retry with backoff (compute future timestamp dynamically)
+    std::string future_time = get_future_timestamp(1); // 1 hour ahead
+    db.update_retry(run_id2, 1, future_time, "Network timeout");
     pending = db.load_pending_reports();
     assert(pending.size() == 0); // Not ready yet (next_retry_at is in future)
     std::cout << "[PASS] Updated retry metadata, not yet ready\n";
@@ -128,6 +148,19 @@ void test_retry_queue() {
     pending = db.load_pending_reports();
     assert(pending.size() == 0); // Failed, no longer pending
     std::cout << "[PASS] Marked as failed after max retries\n";
+    
+    // Test UNIQUE constraint on report_hash
+    db.persist_run("2026-02-18T12:20:00.000Z", "test-host-3", "test-policy", 95, details);
+    int run_id3 = db.get_last_run_id();
+    std::string duplicate_hash = hash2; // Reuse hash from run_id2
+    
+    try {
+        db.enqueue_report(run_id3, report2.dump(), duplicate_hash);
+        assert(false); // Should not reach here
+    } catch (const std::runtime_error& e) {
+        // Expected: UNIQUE constraint violation
+        std::cout << "[PASS] Duplicate report_hash correctly rejected\n";
+    }
     
     std::cout << "\n";
     remove(test_db);
@@ -204,6 +237,8 @@ int main() {
         std::cout << "  - SHA-256 hashing is deterministic\n";
         std::cout << "  - MockDeliveryClient works correctly\n";
         std::cout << "  - Retry queue operations functional\n";
+        std::cout << "  - UNIQUE constraint on report_hash enforced\n";
+        std::cout << "  - Dynamic timestamp handling prevents test decay\n";
         std::cout << "  - End-to-end integration verified\n";
         std::cout << "  - Ready for HTTP/MQTT delivery clients\n\n";
         

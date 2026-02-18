@@ -112,16 +112,31 @@ struct CliOptions {
 
 static CliOptions parse_cli(int argc, char** argv) {
     CliOptions opts;
+    std::string positional_arg;
+    
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--policy" && i + 1 < argc) {
             opts.policy_path = argv[++i];
         } else if (a == "--report-path" && i + 1 < argc) {
             opts.report_path = argv[++i];
+        } else if (!a.empty() && a[0] != '-') {
+            // Positional argument (not a flag)
+            if (positional_arg.empty()) {
+                positional_arg = a;
+            } else {
+                spdlog::warn("Multiple positional arguments, ignoring: {}", a);
+            }
         } else {
             spdlog::warn("Unknown argument: {}", a);
         }
     }
+    
+    // If positional arg provided and --policy was not set explicitly, use positional
+    if (!positional_arg.empty() && opts.policy_path == "policies/sample_policy.json") {
+        opts.policy_path = positional_arg;
+    }
+    
     return opts;
 }
 

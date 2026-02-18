@@ -210,13 +210,23 @@ std::vector<QueuedReport> DB::load_pending_reports() {
     while (sqlite3_step(stmt) == SQLITE_ROW) {
         QueuedReport r;
         r.run_id = sqlite3_column_int(stmt, 0);
-        r.report_hash = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
-        r.report_json = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        
+        // Defensive NULL checks (even though COALESCE should prevent NULLs)
+        const char* hash_ptr = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        const char* json_ptr = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        const char* state_ptr = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
+        const char* next_retry_ptr = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
+        const char* created_ptr = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
+        const char* error_ptr = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 7));
+        
+        r.report_hash = hash_ptr ? hash_ptr : "";
+        r.report_json = json_ptr ? json_ptr : "";
+        r.state = state_ptr ? state_ptr : "";
+        r.next_retry_at = next_retry_ptr ? next_retry_ptr : "";
+        r.created_at = created_ptr ? created_ptr : "";
+        r.last_error = error_ptr ? error_ptr : "";
         r.attempts = sqlite3_column_int(stmt, 3);
-        r.state = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
-        r.next_retry_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
-        r.created_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
-        r.last_error = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 7));
+        
         reports.push_back(r);
     }
     

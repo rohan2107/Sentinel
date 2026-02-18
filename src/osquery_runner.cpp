@@ -34,6 +34,17 @@ namespace {
 const std::chrono::milliseconds kOsqueryTimeout{10000}; // hard timeout to avoid hangs
 constexpr size_t kMaxOutputBytes = 1 * 1024 * 1024;      // guardrail for huge outputs
 
+// Extract JSON from osquery output that may contain warning lines (e.g., "W0218 14:12:04...")
+// osquery writes warnings to stdout before JSON, so we search for first '[' or '{'
+static std::string extract_json(const std::string& raw_output) {
+    // Find first JSON start character
+    size_t json_start = raw_output.find_first_of("[{");
+    if (json_start == std::string::npos) {
+        return raw_output; // No JSON found, return as-is (will fail parse, caller handles)
+    }
+    return raw_output.substr(json_start);
+}
+
 #ifdef _WIN32
 // Minimal Windows command-line argument escaping (compatible with CommandLineToArgvW rules)
 static std::string win_escape_arg(const std::string& arg) {
@@ -216,7 +227,11 @@ json run_osquery_json(const std::string& sql_query) {
         if (result.empty()) {
             return json::array();
         }
-        json parsed = json::parse(result);
+        
+        // Extract JSON from output (filters osquery warnings like "W0218 ...")
+        std::string json_str = extract_json(result);
+        json parsed = json::parse(json_str);
+        
         if (exit_code != 0) {
             // Non-zero with JSON output: surface as error to caller for logging/handling.
             std::ostringstream oss;

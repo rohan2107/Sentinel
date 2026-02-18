@@ -163,6 +163,11 @@ Policies define security rules using osquery for data collection and Lua for eva
   ```
 - **[osquery](https://osquery.io/downloads/official)** installed and `osqueryi.exe` in `PATH`
 
+**Optional Tools:**
+- **sqlite3 CLI** (for manual database inspection): `winget install SQLite.SQLite`
+  - Not required for building or testing
+  - Tests validate schema automatically
+
 ### Build
 
 **PowerShell 7** (recommended):
@@ -199,6 +204,28 @@ Validates: Build succeeds, execution completes, report generated, database persi
 
 ## Testing & CI
 
+### Quick Validation (5 minutes)
+
+Before committing, run the three core checks:
+
+```powershell
+.\scripts\build.ps1   # Clean build
+.\scripts\test.ps1    # Integration tests (13 assertions)
+.\scripts\run.ps1     # Phase 1 backward compatibility
+```
+
+**See:** [docs/QUICK_TEST.md](docs/QUICK_TEST.md) for quick reference.
+
+### Comprehensive Pre-Commit Testing (10-15 minutes)
+
+Before merging to master, run full validation including:
+- Build integrity (Debug + Release)
+- Edge case testing
+- CLI argument variations
+- Database schema verification
+
+**See:** [docs/PRE_COMMIT_TESTING.md](docs/PRE_COMMIT_TESTING.md) for complete checklist.
+
 ### Integration Tests
 
 Run delivery foundation integration tests:
@@ -222,6 +249,8 @@ scripts\test.bat
 - SHA-256 hash determinism (sorted JSON keys)
 - MockDeliveryClient success/failure modes
 - Retry queue operations (enqueue, load, mark delivered/failed)
+- UNIQUE constraint on report_hash
+- Dynamic timestamp handling (prevents test decay)
 - End-to-end flow (persist → hash → enqueue → deliver)
 
 ### Continuous Integration
