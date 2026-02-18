@@ -5,6 +5,8 @@
 #include <chrono>
 #include <iomanip>
 #include <sstream>
+#include <unordered_set>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
@@ -21,6 +23,52 @@
 #endif
 
 using json = nlohmann::json;
+
+static bool validate_policy(const json& policy, std::vector<std::string>& errors) {
+    if (!policy.is_object()) {
+        errors.push_back("Policy root must be an object");
+        return false;
+    }
+    if (!policy.contains("rules") || !policy["rules"].is_array()) {
+        errors.push_back("Policy missing 'rules' array");
+        return false;
+    }
+    std::unordered_set<std::string> ids;
+    for (const auto& rule : policy["rules"]) {
+        if (!rule.is_object()) {
+            errors.push_back("Rule is not an object");
+            continue;
+        }
+        if (!rule.contains("id") || !rule["id"].is_string()) {
+            errors.push_back("Rule missing string 'id'");
+            continue;
+        }
+        const std::string id = rule["id"].get<std::string>();
+        if (id.empty()) errors.push_back("Rule id is empty");
+        if (ids.count(id)) errors.push_back("Duplicate rule id: " + id);
+        ids.insert(id);
+
+        if (!rule.contains("query") || !rule["query"].is_string()) {
+            errors.push_back("Rule " + id + " missing string 'query'");
+        } else if (rule["query"].get<std::string>().size() > 4096) {
+            errors.push_back("Rule " + id + " query too long (>4096 chars)");
+        }
+
+        if (!rule.contains("lua") || !rule["lua"].is_string()) {
+            errors.push_back("Rule " + id + " missing string 'lua'");
+        }
+
+        if (rule.contains("weight") && !rule["weight"].is_number_integer()) {
+            errors.push_back("Rule " + id + " weight must be integer");
+        } else if (rule.contains("weight")) {
+            int w = rule["weight"].get<int>();
+            if (w < 0 || w > 100) {
+                errors.push_back("Rule " + id + " weight out of range 0-100");
+            }
+        }
+    }
+    return errors.empty();
+}
 
 // Return current UTC time in ISO-8601 with milliseconds, e.g. 2025-09-20T12:34:56.789Z
 static std::string iso8601_utc_now() {
@@ -103,9 +151,12 @@ int main(int argc, char** argv) {
     }
 
     // Basic policy validation
-    if (!policy.contains("rules") || !policy["rules"].is_array()) {
-        spdlog::error("Policy missing 'rules' array");
-        std::cerr << "Policy missing 'rules' array" << std::endl;
+    std::vector<std::string> validation_errors;
+    if (!validate_policy(policy, validation_errors)) {
+        for (const auto& e : validation_errors) {
+            spdlog::error("Policy validation error: {}", e);
+            std::cerr << "Policy validation error: " << e << std::endl;
+        }
         return 1;
     }
 

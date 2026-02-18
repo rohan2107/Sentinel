@@ -37,7 +37,7 @@ where sqlite3 >nul 2>&1
 if not errorlevel 1 (
   echo.
   echo --- Last DB entry in sentinel_data.sqlite3 ---
-  sqlite3 sentinel_data.sqlite3 "SELECT id, timestamp, policy, score FROM runs ORDER BY id DESC LIMIT 1;"
+  sqlite3 sentinel_data.sqlite3 "SELECT id, ts, policy, score FROM runs ORDER BY id DESC LIMIT 1;"
 )
 
 echo.

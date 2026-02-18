@@ -2,10 +2,10 @@
   "details": {
     "av_installed": true,
     "firewall_enabled": true,
-    "security_center_status": true
+    "security_center_status": false
   },
   "hostname": "NITRO5ROHAN",
   "policy": "sample-default-windows",
-  "score": 100,
-  "timestamp": "2025-09-20T12:53:34.730Z"
+  "score": 75,
+  "timestamp": "2025-12-09T14:15:18.020Z"
 }
