@@ -23,15 +23,14 @@ jobs:
         uses: microsoft/setup-msbuild@v1
 
       # vcpkg bootstrap + installs can be slow on cold CI runs.
-      # We cache vcpkg installed files and the packages folder across runs to speed up subsequent builds.
-      - name: Cache vcpkg installed & packages
+      # We cache the entire vcpkg directory to speed up subsequent builds.
+      - name: Cache vcpkg
         uses: actions/cache@v4
         with:
           path: |
-            ${{ github.workspace }}\vcpkg\installed
-            ${{ github.workspace }}\vcpkg\packages
-          key: vcpkg-${{ runner.os }}-${{ hashFiles('**/vcpkg.json') }}
-          # restore-keys fallback in case vcpkg.json changed:
+            ${{ github.workspace }}\vcpkg
+          key: vcpkg-${{ runner.os }}-nlohmann-json-spdlog-sol2-lua-sqlite3-v1
+          # restore-keys fallback:
           restore-keys: |
             vcpkg-${{ runner.os }}-
 
@@ -44,13 +43,15 @@ jobs:
         # Use cmd shell to keep syntax consistent with later steps
         shell: cmd
         run: |
-          if not exist "%VCPKG_ROOT%" (
-            git clone https://github.com/microsoft/vcpkg.git "%VCPKG_ROOT%"
+          if not exist "%VCPKG_ROOT%\vcpkg.exe" (
+            if not exist "%VCPKG_ROOT%" (
+              git clone https://github.com/microsoft/vcpkg.git "%VCPKG_ROOT%"
+            )
             pushd "%VCPKG_ROOT%"
             bootstrap-vcpkg.bat
             popd
           ) else (
-            echo vcpkg already present
+            echo vcpkg.exe already present
           )
 
       - name: Install vcpkg packages
