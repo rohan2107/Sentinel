@@ -74,6 +74,17 @@ jobs:
         shell: cmd
         run: cmake --build build --config Debug
 
+      - name: Run Integration Tests (Debug)
+        shell: cmd
+        run: |
+          echo Running delivery foundation integration tests...
+          build\Debug\test_delivery_foundation.exe
+          if errorlevel 1 (
+            echo Integration tests FAILED
+            exit /b 1
+          )
+          echo Integration tests PASSED
+
       - name: Upload build artifact (build folder)
         if: ${{ always() }}
         uses: actions/upload-artifact@v4

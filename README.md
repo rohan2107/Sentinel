@@ -38,11 +38,35 @@ CREATE TABLE features (
   av_installed INTEGER,
   FOREIGN KEY(run_id) REFERENCES runs(id)
 );
+
+-- Phase 2: Delivery layer
+CREATE TABLE retry_queue (
+  run_id INTEGER PRIMARY KEY,
+  report_hash TEXT UNIQUE NOT NULL,
+  report_json TEXT NOT NULL,
+  attempts INTEGER DEFAULT 0,
+  state TEXT NOT NULL CHECK (state IN ('PENDING', 'DELIVERED', 'FAILED')),
+  next_retry_at TEXT,
+  created_at TEXT NOT NULL,
+  delivered_at TEXT,
+  failed_at TEXT,
+  last_error TEXT,
+  FOREIGN KEY(run_id) REFERENCES runs(id)
+);
 ```
 
-### Phase 2: Delivery Layer 🔄 **PLANNED - NOT YET IMPLEMENTED**
+### Phase 2: Delivery Layer 🔄 **IN PROGRESS**
 
-Planned features (documented in [`docs/roadmap/`](docs/roadmap/)):
+**Delivery Foundation** ✅ (Branch: `feature/delivery-foundation`)
+- ✅ Retry queue database schema (3-state: PENDING/DELIVERED/FAILED)
+- ✅ SHA-256 content hashing (deterministic, standalone implementation)
+- ✅ DeliveryClient interface + MockDeliveryClient
+- ✅ Queue operations (enqueue, load, mark delivered/failed)
+- ✅ Integration tests passing
+
+**Next:** HTTP delivery client, MQTT delivery client, retry queue manager
+
+**Remaining features** (documented in [`docs/roadmap/`](docs/roadmap/)):
 
 - **At-Least-Once Delivery**: Durable retry queue with exponential backoff
 - **Content-Addressable Deduplication**: SHA-256 hashing for idempotent backend processing
@@ -170,6 +194,44 @@ scripts\run.bat policies\sample_policy.json
 ```
 
 Validates: Build succeeds, execution completes, report generated, database persisted.
+
+---
+
+## Testing & CI
+
+### Integration Tests
+
+Run delivery foundation integration tests:
+
+**PowerShell 7**:
+```powershell
+.\scripts\test.ps1
+```
+
+**Command Prompt**:
+```bat
+scripts\test.bat
+```
+
+**Or directly**:
+```powershell
+.\build\Debug\test_delivery_foundation.exe
+```
+
+**Tests cover:**
+- SHA-256 hash determinism (sorted JSON keys)
+- MockDeliveryClient success/failure modes
+- Retry queue operations (enqueue, load, mark delivered/failed)
+- End-to-end flow (persist → hash → enqueue → deliver)
+
+### Continuous Integration
+
+GitHub Actions workflow runs on every push/PR to master:
+- ✅ Build (Release + Debug)
+- ✅ Run integration tests
+- ✅ Upload build artifacts
+
+See [`.github/workflows/windows-build.yml`](.github/workflows/windows-build.yml) for details.
 
 ---
 

@@ -42,6 +42,24 @@ void DB::init_schema() {
       -- add more feature columns here
       FOREIGN KEY(run_id) REFERENCES runs(id)
     );
+
+    -- retry queue for at-least-once delivery semantics
+    CREATE TABLE IF NOT EXISTS retry_queue (
+      run_id INTEGER PRIMARY KEY,
+      report_hash TEXT UNIQUE NOT NULL,
+      report_json TEXT NOT NULL,
+      attempts INTEGER DEFAULT 0,
+      state TEXT NOT NULL CHECK (state IN ('PENDING', 'DELIVERED', 'FAILED')),
+      next_retry_at TEXT,
+      created_at TEXT NOT NULL,
+      delivered_at TEXT,
+      failed_at TEXT,
+      last_error TEXT,
+      FOREIGN KEY(run_id) REFERENCES runs(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_retry_state ON retry_queue(state, next_retry_at);
+    CREATE INDEX IF NOT EXISTS idx_retry_hash ON retry_queue(report_hash);
     )sql";
 
     char* errmsg = nullptr;
@@ -143,4 +161,134 @@ nlohmann::json DB::all_runs_json() {
     }
     sqlite3_finalize(stmt);
     return arr;
+}
+
+int DB::get_last_run_id() {
+    return static_cast<int>(sqlite3_last_insert_rowid(p->db));
+}
+
+void DB::enqueue_report(int run_id, const std::string& report_json, const std::string& report_hash) {
+    const char* sql = R"sql(
+        INSERT INTO retry_queue (run_id, report_hash, report_json, attempts, state, created_at)
+        VALUES (?, ?, ?, 0, 'PENDING', datetime('now'));
+    )sql";
+    
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(p->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        throw std::runtime_error("sqlite prepare enqueue_report");
+    }
+    
+    sqlite3_bind_int(stmt, 1, run_id);
+    sqlite3_bind_text(stmt, 2, report_hash.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, report_json.c_str(), -1, SQLITE_TRANSIENT);
+    
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        throw std::runtime_error("sqlite enqueue_report step failed");
+    }
+    sqlite3_finalize(stmt);
+}
+
+std::vector<QueuedReport> DB::load_pending_reports() {
+    // Load PENDING reports that are ready (next_retry_at is NULL or <= now)
+    const char* sql = R"sql(
+        SELECT run_id, report_hash, report_json, attempts, state, 
+               COALESCE(next_retry_at, ''), created_at, COALESCE(last_error, '')
+        FROM retry_queue
+        WHERE state = 'PENDING' 
+          AND (next_retry_at IS NULL OR next_retry_at <= datetime('now'))
+        ORDER BY created_at ASC;
+    )sql";
+    
+    sqlite3_stmt* stmt = nullptr;
+    std::vector<QueuedReport> reports;
+    
+    if (sqlite3_prepare_v2(p->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        throw std::runtime_error("sqlite prepare load_pending_reports");
+    }
+    
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        QueuedReport r;
+        r.run_id = sqlite3_column_int(stmt, 0);
+        r.report_hash = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        r.report_json = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        r.attempts = sqlite3_column_int(stmt, 3);
+        r.state = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4));
+        r.next_retry_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5));
+        r.created_at = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6));
+        r.last_error = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 7));
+        reports.push_back(r);
+    }
+    
+    sqlite3_finalize(stmt);
+    return reports;
+}
+
+void DB::mark_delivered(int run_id, const std::string& delivered_at) {
+    const char* sql = R"sql(
+        UPDATE retry_queue 
+        SET state = 'DELIVERED', delivered_at = ?
+        WHERE run_id = ?;
+    )sql";
+    
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(p->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        throw std::runtime_error("sqlite prepare mark_delivered");
+    }
+    
+    sqlite3_bind_text(stmt, 1, delivered_at.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, run_id);
+    
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        throw std::runtime_error("sqlite mark_delivered step failed");
+    }
+    sqlite3_finalize(stmt);
+}
+
+void DB::mark_failed(int run_id, const std::string& failed_at, const std::string& last_error) {
+    const char* sql = R"sql(
+        UPDATE retry_queue 
+        SET state = 'FAILED', failed_at = ?, last_error = ?
+        WHERE run_id = ?;
+    )sql";
+    
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(p->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        throw std::runtime_error("sqlite prepare mark_failed");
+    }
+    
+    sqlite3_bind_text(stmt, 1, failed_at.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, last_error.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 3, run_id);
+    
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        throw std::runtime_error("sqlite mark_failed step failed");
+    }
+    sqlite3_finalize(stmt);
+}
+
+void DB::update_retry(int run_id, int attempts, const std::string& next_retry_at, const std::string& error) {
+    const char* sql = R"sql(
+        UPDATE retry_queue 
+        SET attempts = ?, next_retry_at = ?, last_error = ?
+        WHERE run_id = ?;
+    )sql";
+    
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(p->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        throw std::runtime_error("sqlite prepare update_retry");
+    }
+    
+    sqlite3_bind_int(stmt, 1, attempts);
+    sqlite3_bind_text(stmt, 2, next_retry_at.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, error.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 4, run_id);
+    
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        throw std::runtime_error("sqlite update_retry step failed");
+    }
+    sqlite3_finalize(stmt);
 }

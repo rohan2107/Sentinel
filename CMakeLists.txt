@@ -38,6 +38,8 @@ add_executable(Sentinel
   src/lua_evaluator.cpp
   src/scoring.cpp
   src/db.cpp
+  src/report_hasher.cpp
+  src/delivery_client.cpp
 )
 
 target_include_directories(Sentinel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -47,5 +49,20 @@ target_link_libraries(Sentinel PRIVATE
   spdlog::spdlog
   sol2::sol2
   Lua::Lua
+  unofficial::sqlite3::sqlite3
+)
+
+# Delivery foundation integration test
+add_executable(test_delivery_foundation
+  test_delivery_foundation.cpp
+  src/db.cpp
+  src/report_hasher.cpp
+  src/delivery_client.cpp
+)
+
+target_include_directories(test_delivery_foundation PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+target_link_libraries(test_delivery_foundation PRIVATE
+  nlohmann_json::nlohmann_json
   unofficial::sqlite3::sqlite3
 )
