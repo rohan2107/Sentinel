@@ -1,202 +1,382 @@
 # Code Modules: Delivery Layer
 
-> ⚠️ **Status: Planned Feature - Not Yet Implemented**
+> **Status:** Foundation ✅ Implemented (5 modules) | Remaining ⏳ Planned (4 modules + integration)
 >
-> This document describes the code modules that will comprise the delivery layer.
-> None of these modules exist in the master branch yet.
+> The delivery foundation is complete and merged. This document tracks what's done and what remains.
+
+## Implementation Progress
+
+| Module | Status | Complexity |
+|--------|--------|------------|
+| `report_hasher` | ✅ Implemented | Low (standalone SHA-256) |
+| `delivery_client` (interface) | ✅ Implemented | Low (abstract base) |
+| `delivery_client` (mock) | ✅ Implemented | Low (testing) |
+| `db` (retry_queue schema) | ✅ Implemented | Low (SQL + 6 methods) |
+| `test_delivery_foundation` | ✅ Implemented | Low (integration tests) |
+| `http_delivery_client` | ⏳ Planned | Low (cpp-httplib) |
+| `mqtt_delivery_client` | ⏳ Planned | Medium (paho-mqtt) |
+| `retry_queue` (manager) | ⏳ Planned | Low (backoff logic) |
+| `main.cpp` (integration) | ⏳ Planned | Low (glue code) |
+
+---
 
 ## Module Dependency Graph
 
 ```
-main.cpp
-    ├─→ report_hasher.cpp (SHA-256 computation)
-    ├─→ retry_queue.cpp (queue management + backoff)
-    │   ├─→ db.cpp (schema + persistence)
-    │   └─→ delivery_client.cpp (abstraction layer)
-    │       ├─→ mqtt_delivery_client.cpp (paho-mqttpp3, primary)
-    │       ├─→ http_delivery_client.cpp (cpp-httplib, fallback)
-    │       └─→ mock_delivery_client.cpp (testing)
+main.cpp (⏳ integration pending)
+    ├─→ report_hasher ✅ (SHA-256, canonical JSON)
+    ├─→ retry_queue ⏳ (manager + backoff)
+    │   ├─→ db ✅ (schema + queue operations)
+    │   └─→ delivery_client ✅ (interface)
+    │       ├─→ MockDeliveryClient ✅ (testing)
+    │       ├─→ HttpDeliveryClient ⏳ (cpp-httplib)
+    │       └─→ MqttDeliveryClient ⏳ (paho-mqttpp3)
     └─→ [existing: osquery_runner, lua_evaluator, scoring]
 ```
 
 ---
 
-## New Module: report_hasher
+## ✅ Implemented: report_hasher
 
-**Purpose:** SHA-256 content hashing for idempotent deduplication
+**Purpose:** SHA-256 content hashing for report deduplication
 
+**Files:**
+- `src/report_hasher.h`
+- `src/report_hasher.cpp`
+
+**Interface:**
 ```cpp
-// src/report_hasher.h
-#pragma once
-#include <string>
-#include <nlohmann/json.hpp>
-
-// Compute SHA-256 hash of canonical JSON
+// Compute SHA-256 hash of canonical JSON report
 std::string compute_report_hash(const nlohmann::json& report);
 
-// Canonicalize: sorted keys, no whitespace
+// Canonicalize JSON: sorted keys, compact format
 std::string canonicalize_json(const nlohmann::json& j);
 ```
 
-**Dependencies:** OpenSSL (SHA256) or standalone sha256.cpp
+**Implementation Details:**
+- Standalone SHA-256 (no OpenSSL dependency)
+- Uses bit operations and lookup tables
+- Leverages nlohmann::json's std::map ordering (alphabetical keys guaranteed)
+- Returns 64-character hex string
 
-**LOC:** ~80 lines
+**Tests:** ✅ Passing
+- Hash determinism (same content → same hash regardless of key order)
+- Modified content produces different hash
 
 ---
 
-## New Module: delivery_client
+## ✅ Implemented: delivery_client (Foundation)
 
-**Purpose:** Abstract delivery with protocol selection (MQTT primary, HTTP fallback)
+**Purpose:** Abstract delivery interface for protocol abstraction
 
+**Files:**
+- `src/delivery_client.h`
+- `src/delivery_client.cpp`
+
+**Interface:**
 ```cpp
-// src/delivery_client.h
-#pragma once
-#include <string>
-
 struct DeliveryResult {
     bool success;
-    int http_code;  // or MQTT reason code
-    std::string error;
+    int status_code;
+    std::string error_message;
 };
 
 class DeliveryClient {
 public:
     virtual ~DeliveryClient() = default;
     virtual DeliveryResult send(const std::string& report_json,
-                                const std::string& hash) = 0;
+                                const std::string& report_hash) = 0;
 };
 
-// MQTT QoS 1 (primary delivery path)
+class MockDeliveryClient : public DeliveryClient {
+public:
+    explicit MockDeliveryClient(bool always_succeed);
+    DeliveryResult send(const std::string& report_json,
+                        const std::string& report_hash) override;
+    
+    // Test inspection
+    int get_call_count() const;
+    std::string get_last_hash() const;
+};
+```
+
+**Implementation Details:**
+- Pure virtual base class for strategy pattern
+- MockDeliveryClient for testing (configurable success/failure)
+- Call counting and inspection for test validation
+
+**Tests:** ✅ Passing
+- Mock succeeds when configured to succeed
+- Mock fails when configured to fail
+- Error message validation
+
+---
+
+## ✅ Implemented: db (Retry Queue Extensions)
+
+**Purpose:** Durable queue persistence with 3-state machine
+
+**Files:**
+- `src/db.h` (modified)
+- `src/db.cpp` (modified)
+
+**New Schema:**
+```sql
+CREATE TABLE IF NOT EXISTS retry_queue (
+    run_id INTEGER PRIMARY KEY,
+    report_hash TEXT UNIQUE NOT NULL,
+    report_json TEXT NOT NULL,
+    attempts INTEGER DEFAULT 0,
+    state TEXT NOT NULL CHECK (state IN ('PENDING', 'DELIVERED', 'FAILED')),
+    next_retry_at TEXT,
+    created_at TEXT NOT NULL,
+    delivered_at TEXT,
+    failed_at TEXT,
+    last_error TEXT,
+    FOREIGN KEY (run_id) REFERENCES runs(id)
+);
+
+CREATE INDEX idx_retry_queue_pending ON retry_queue(state, next_retry_at);
+CREATE INDEX idx_retry_queue_hash ON retry_queue(report_hash);
+```
+
+**New Methods:**
+```cpp
+// Enqueue report for delivery
+void enqueue_report(int run_id, const std::string& report_json,
+                    const std::string& report_hash);
+
+// Load reports ready for delivery (PENDING with next_retry_at <= now)
+std::vector<QueuedReport> load_pending_reports();
+
+// Mark successful delivery
+void mark_delivered(int run_id, const std::string& delivered_at);
+
+// Mark terminal failure
+void mark_failed(int run_id, const std::string& failed_at,
+                 const std::string& last_error);
+
+// Update retry metadata (attempts, next_retry_at, last_error)
+void update_retry(int run_id, int attempts, const std::string& next_retry_at,
+                  const std::string& error);
+
+// Get last inserted run_id
+int get_last_run_id();
+```
+
+**Implementation Details:**
+- Defensive NULL checks for nullable columns (next_retry_at, last_error)
+- COALESCE in SQL + C++ pointer validation
+- Atomic INSERT/UPDATE operations
+- UNIQUE constraint enforcement on report_hash
+
+**Tests:** ✅ Passing
+- Enqueue report after persist_run
+- Load pending reports (filters by state and next_retry_at)
+- Mark delivered (state transition PENDING → DELIVERED)
+- Update retry metadata (attempts increment, backoff timestamp)
+- Mark failed (terminal state)
+- UNIQUE constraint rejection (duplicate hash)
+
+---
+
+## ⏳ Planned: http_delivery_client
+
+**Purpose:** HTTP POST delivery to backend
+
+**Files:**
+- `src/http_delivery_client.h`
+- `src/http_delivery_client.cpp`
+
+**Planned Interface:**
+```cpp
+class HttpDeliveryClient : public DeliveryClient {
+public:
+    HttpDeliveryClient(const std::string& backend_url);
+    DeliveryResult send(const std::string& report_json,
+                        const std::string& report_hash) override;
+private:
+    std::string backend_url_;
+};
+```
+
+**Dependencies:** cpp-httplib (header-only, vcpkg)
+
+**Implementation Plan:**
+- POST to `{backend_url}/reports`
+- Body: `{"report": <report_json>, "hash": <hash>}`
+- Header: `X-Report-Hash: <hash>`
+- Timeout: 30s
+- Success: HTTP 200/201/409 (409 = duplicate, treated as success)
+- Retry: HTTP 5xx, network errors
+- Terminal: HTTP 400 (malformed request)
+
+---
+
+## ⏳ Planned: mqtt_delivery_client
+
+**Purpose:** MQTT QoS 1 publish to broker
+
+**Files:**
+- `src/mqtt_delivery_client.h`
+- `src/mqtt_delivery_client.cpp`
+
+**Planned Interface:**
+```cpp
 class MqttDeliveryClient : public DeliveryClient {
 public:
     MqttDeliveryClient(const std::string& broker_url, const std::string& topic);
     DeliveryResult send(const std::string& report_json,
-                        const std::string& hash) override;
+                        const std::string& report_hash) override;
 private:
     std::string broker_url_;
     std::string topic_;
     // paho-mqttpp3 client instance
 };
-
-// HTTP POST (fallback/testing)
-class HttpDeliveryClient : public DeliveryClient {
-public:
-    HttpDeliveryClient(const std::string& backend_url);
-    DeliveryResult send(const std::string& report_json,
-                        const std::string& hash) override;
-private:
-    std::string backend_url_;
-};
-
-// Testing mock
-class MockDeliveryClient : public DeliveryClient {
-public:
-    MockDeliveryClient(bool always_succeed);
-    DeliveryResult send(const std::string& report_json,
-                        const std::string& hash) override;
-private:
-    bool always_succeed_;
-};
 ```
 
-**Dependencies:** 
-- paho-mqttpp3 (Eclipse Paho MQTT C++)
-- cpp-httplib (header-only) or libcurl
+**Dependencies:** paho-mqttpp3 (Eclipse Paho, vcpkg)
 
-**LOC:** ~250 lines total
-- MqttDeliveryClient: ~120 lines
-- HttpDeliveryClient: ~80 lines
-- MockDeliveryClient: ~50 lines
+**Implementation Plan:**
+- Broker: `tcp://localhost:1883` (Mosquitto)
+- Topic: `sentinel/reports`
+- QoS: 1 (at-least-once)
+- clean_session: false (persistent)
+- Payload: `{"report": <report_json>, "hash": <hash>}`
+- Timeout: 30s
+- Success: PUBACK received
+- Retry: Connection failure, timeout
 
 ---
 
-## New Module: retry_queue
+## ⏳ Planned: retry_queue (Manager)
 
-**Purpose:** Durable queue with exponential backoff + crash recovery
+**Purpose:** Orchestrate delivery with exponential backoff
 
+**Files:**
+- `src/retry_queue.h`
+- `src/retry_queue.cpp`
+
+**Planned Interface:**
 ```cpp
-// src/retry_queue.h
-#pragma once
-#include <string>
-#include <vector>
-#include <memory>
-#include "db.h"
-#include "delivery_client.h"
-
-struct QueuedReport {
-    int run_id;
-    std::string report_hash;
-    std::string report_json;
-    int attempts;
-    std::string state;
-    std::string next_retry_at;
-};
-
 class RetryQueue {
 public:
     RetryQueue(DB& db, std::unique_ptr<DeliveryClient> client);
     
-    // Enqueue after persistence
+    // Enqueue report after persistence
     void enqueue(int run_id, const std::string& report_json,
-                 const std::string& hash);
+                 const std::string& report_hash);
     
-    // Process all pending (immediate + retry-ready)
+    // Process all reports ready for delivery
     void process_pending();
     
-    // Load on startup (crash recovery)
+    // Load pending on startup (crash recovery)
     std::vector<QueuedReport> load_pending();
     
 private:
     DB& db_;
     std::unique_ptr<DeliveryClient> client_;
     
+    // Compute next retry: min(300, 2^attempts) seconds
     std::string compute_next_retry(int attempts);
-    void update_state_delivered(int run_id);
-    void update_state_retry(int run_id, int attempts, const std::string& error);
-    void update_state_failed(int run_id);
 };
 ```
 
-**Dependencies:** db.cpp, delivery_client.cpp
-
-**LOC:** ~200 lines
+**Implementation Plan:**
+- Call `db.load_pending_reports()`
+- For each report:
+  - Call `client_->send(report_json, report_hash)`
+  - If success: `db.mark_delivered(run_id, now)`
+  - If failure and attempts < 5: `db.update_retry(run_id, attempts+1, next_retry, error)`
+  - If attempts >= 5: `db.mark_failed(run_id, now, error)`
+- Exponential backoff: 1s → 2s → 4s → 8s → 16s
+- No jitter (single agent, no thundering herd)
 
 ---
 
-## Modified Module: db.cpp
+## ⏳ Planned: main.cpp Integration
+
+**Purpose:** Wire delivery layer into evaluation flow
 
 **Changes:**
-- Add `retry_queue` table to `init_schema()`
-- Add `get_last_run_id()` method
-- Add retry queue state update methods
-
 ```cpp
-// src/db.h additions
-class DB {
-public:
-    // ... existing methods ...
+int main(int argc, char** argv) {
+    // ... existing policy loading and evaluation ...
     
-    // Get last inserted run_id
-    int get_last_run_id();
+    // After report persistence:
+    DB db("sentinel_data.sqlite3");
+    db.init_schema();
     
-    // Retry queue operations
-    void enqueue_report(int run_id, const std::string& report_json,
-                        const std::string& hash);
-    void update_retry_state(int run_id, const std::string& state,
-                            int attempts, const std::string& next_retry = "",
-                            const std::string& error = "");
-};
+    // Persist run (existing)
+    db.persist_run(timestamp, hostname, policy_name, score, details);
+    int run_id = db.get_last_run_id();
+    
+    // Compute hash
+    std::string report_hash = compute_report_hash(report);
+    
+    // Enqueue for delivery
+    db.enqueue_report(run_id, report.dump(), report_hash);
+    
+    // Create delivery client (configurable via --delivery-mode flag)
+    std::unique_ptr<DeliveryClient> client;
+    if (delivery_mode == "http") {
+        client = std::make_unique<HttpDeliveryClient>(backend_url);
+    } else if (delivery_mode == "mqtt") {
+        client = std::make_unique<MqttDeliveryClient>(broker_url, topic);
+    } else {
+        client = std::make_unique<MockDeliveryClient>(true);
+    }
+    
+    // Process pending (includes current + any crashed reports)
+    RetryQueue queue(db, std::move(client));
+    queue.process_pending();
+    
+    return 0;
+}
 ```
-
-**LOC Added:** ~100 lines
 
 ---
 
-## Modified Module: main.cpp
+## Testing Strategy
 
-**Changes:**
-- Integrate delivery layer after report persistence
-- Add crash recovery on startup
+**✅ Implemented Tests:**
+- `test_delivery_foundation.cpp`
+- Hash determinism, mock client, queue operations, end-to-end flow
+
+**⏳ Planned Tests:**
+- HTTP delivery success/failure/timeout
+- MQTT publish success/disconnect/reconnect
+- Exponential backoff timing
+- Crash recovery (enqueue, kill, restart, verify delivery)
+- Network partition (accumulate in queue, reconnect, drain)
+- Duplicate handling (backend rejects via hash)
+
+---
+
+## Dependencies
+
+**Already Added (vcpkg):**
+- nlohmann-json ✅
+- spdlog ✅
+- sol2 ✅
+- lua ✅
+- sqlite3 ✅
+
+**To Be Added:**
+- cpp-httplib (header-only, simple HTTP client)
+- paho-mqttpp3 (optional, for MQTT support)
+
+**Installation:**
+```powershell
+vcpkg install cpp-httplib:x64-windows
+vcpkg install paho-mqttpp3:x64-windows  # optional
+```
+
+---
+
+## Next Steps
+
+See [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) for phased implementation timeline.
 
 ```cpp
 int main(int argc, char** argv) {
@@ -229,8 +409,6 @@ int main(int argc, char** argv) {
     return 0;
 }
 ```
-
-**LOC Added:** ~30 lines
 
 ---
 
@@ -268,21 +446,19 @@ def receive_report(report: dict, hash: str):
     return {"status": "accepted"}
 ```
 
-**LOC:** ~50 lines
-
 ---
 
 ## Summary
 
-| Module | New/Modified | LOC | Purpose |
-|--------|--------------|-----|---------|
-| `report_hasher.cpp` | NEW | 80 | SHA-256 hashing |
-| `delivery_client.cpp` | NEW | 150 | HTTP abstraction |
-| `retry_queue.cpp` | NEW | 200 | Queue + backoff |
-| `db.cpp` | MODIFIED | +100 | Retry queue schema |
-| `main.cpp` | MODIFIED | +30 | Integration |
-| `backend/server.py` | NEW | 50 | Idempotent backend |
-| **Total** | | **610** | **Delivery layer** |
+| Module | New/Modified | Purpose |
+|--------|--------------|---------|
+| `report_hasher.cpp` | NEW | SHA-256 hashing |
+| `delivery_client.cpp` | NEW | Protocol-agnostic delivery interface |
+| `retry_queue.cpp` | NEW | Queue + backoff |
+| `db.cpp` | MODIFIED | Retry queue schema |
+| `main.cpp` | MODIFIED | Integration |
+| `backend/server.py` | NEW | Idempotent backend |
+| **Total** | | **Delivery layer** |
 
 ---
 
@@ -326,7 +502,7 @@ vcpkg install cpp-httplib openssl
 
 ## Testing Modules
 
-### test_delivery.cpp (optional)
+### test_delivery_foundation.cpp (optional)
 
 ```cpp
 #include "report_hasher.h"

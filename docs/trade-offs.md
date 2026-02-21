@@ -1,8 +1,6 @@
-# Architectural Trade-Offs (Current Implementation)
+# Architectural Trade-Offs
 
-Key decisions for Phase 1 (local evaluation engine) with alternatives, benefits, limitations, and failure thresholds.
-
-> **Note**: Delivery layer trade-offs (at-least-once vs exactly-once, MQTT vs HTTP, content hashing) are documented in [`docs/roadmap/`](roadmap/) as Phase 2 is not yet implemented.
+Key decisions for Sentinel's implementation with alternatives, benefits, limitations, and failure thresholds.
 
 ## Decision Matrix
 
@@ -12,6 +10,9 @@ Key decisions for Phase 1 (local evaluation engine) with alternatives, benefits,
 | **Rules** | Lua | Compiled C++ | Dynamic updates, human-readable, 200KB VM | 100x slower | Complex rules, µs latency |
 | **Data Collection** | osquery | WMI | Cross-platform, SQL interface, maintained | Windows-only in practice | Non-osquery data sources |
 | **JSON Library** | nlohmann/json | RapidJSON | Header-only, intuitive API, wide adoption | Slower than RapidJSON | Parse >10MB/sec |
+| **Content Hashing** | Standalone SHA-256 | OpenSSL | No dependencies, portable | 2x slower | Hash >1000 reports/sec |
+| **Delivery Guarantee** | At-least-once | Exactly-once | Simple, durable, backend dedup | Duplicates possible | Backend can't handle duplicates |
+| **State Machine** | 3-state (PENDING/DELIVERED/FAILED) | 4-state (+RETRY_PENDING) | Simpler logic, fewer states | Less granular visibility | Multi-agent coordination needed |
 
 ## Detailed Analysis
 
@@ -31,7 +32,7 @@ Key decisions for Phase 1 (local evaluation engine) with alternatives, benefits,
 
 **Cost**: 100x slower than C++. Security: malicious infinite loops (mitigated by 1s timeout + instruction limit).
 
-**Fails When**: Complex rules (>100 LOC), µs latency required, formal verification needed.
+**Fails When**: Complex rules, µs latency required, formal verification needed.
 
 **Hybrid**: Critical rules in C++, custom rules in Lua.
 
@@ -59,12 +60,18 @@ Key decisions for Phase 1 (local evaluation engine) with alternatives, benefits,
 
 **SQLite**: Writes >10k/sec, P99 <5ms required, no SQL needed.
 
-**Lua**: Rules become CPU bottleneck (>50%), formal verification required (aerospace/medical), rule logic >100 LOC.
+**Lua**: Rules become CPU bottleneck (>50%), formal verification required (aerospace/medical), complex rule logic.
 
 **osquery**: Need non-system data (cloud APIs, SIEM), latency <50ms required, cross-platform support unnecessary.
 
 **nlohmann/json**: Parse >10MB/sec required, header-only footprint problematic, C++11 constraints.
 
+**Standalone SHA-256**: Hash >1000 reports/sec, need hardware acceleration, formal security audit required.
+
+**At-least-once**: Backend can't handle duplicates, exactly-once semantics required (financial transactions).
+
+**3-state machine**: Multi-agent coordination needed, or monitoring requires distinguishing initial vs retry attempts beyond what `attempts`/`next_retry_at` provide.
+
 ---
 
-**For delivery layer trade-offs** (at-least-once vs exactly-once, MQTT vs HTTP, content hashing), see [`docs/roadmap/`](roadmap/) documentation for Phase 2 planning.
+**For remaining delivery layer implementation** (HTTP/MQTT clients, RetryQueue manager, main.cpp integration), see [`docs/roadmap/IMPLEMENTATION_PLAN.md`](roadmap/IMPLEMENTATION_PLAN.md).

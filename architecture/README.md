@@ -1,8 +1,8 @@
-# Sentinel Architecture (Current Implementation)
+# Sentinel Architecture
 
-Local security compliance evaluation agent with deterministic policy execution and durable persistence.
+Local security compliance evaluation agent with deterministic policy execution, durable persistence, and delivery foundation.
 
-## System Architecture (Phase 1 - Implemented)
+## System Architecture
 
 ```mermaid
 graph TB
@@ -15,6 +15,10 @@ graph TB
         DB[(SQLite<br/>WAL Mode)]
         RW[Report Writer<br/>JSON]
         
+        RH[Report Hasher<br/>SHA-256]
+        DC[DeliveryClient<br/>Interface]
+        MOCK[MockDeliveryClient<br/>Testing]
+        
         M --> PV
         PV --> M
         M --> OR
@@ -22,12 +26,17 @@ graph TB
         LE --> SC
         SC --> DB
         DB --> RW
+        
+        RW --> RH
+        RH --> DB
+        DB --> DC
+        DC --> MOCK
     end
     
     subgraph "Filesystem"
         POL[policies/<br/>sample_policy.json]
         REP[reports/<br/>latest_report.json]
-        DBFILE[(sentinel_data.sqlite3<br/>runs + features tables)]
+        DBFILE[(sentinel_data.sqlite3<br/>runs + features + retry_queue)]
     end
     
     M -.reads.-> POL
@@ -36,12 +45,23 @@ graph TB
     
     classDef storage fill:#e1f5ff,stroke:#01579b
     classDef compute fill:#fff3e0,stroke:#e65100
+    classDef delivery fill:#e8f5e9,stroke:#2e7d32
     
     class DB,DBFILE storage
     class M,PV,OR,LE,SC,RW compute
+    class RH,DC,MOCK delivery
 ```
 
-## Components (Current)
+## Implementation Status
+
+**Phase 1 (Local Evaluation):** ✅ Complete
+**Phase 2 (Delivery Foundation):** ✅ Partial (foundation merged, integration pending)
+
+See [`docs/roadmap/IMPLEMENTATION_PLAN.md`](../docs/roadmap/IMPLEMENTATION_PLAN.md) for detailed breakdown.
+
+---
+
+## Components
 
 ### **main.cpp** - Agent Orchestrator
 - **Purpose**: Controls evaluation lifecycle, error handling, resource cleanup
@@ -51,7 +71,6 @@ graph TB
   - Orchestrate evaluation pipeline
   - Exception handling and logging
   - Exit code determination
-- **LOC**: ~150 lines
 
 ### **Policy Validator**
 - **Purpose**: Parse and validate JSON policy files
@@ -70,7 +89,6 @@ graph TB
   - Captures stdout/stderr
   - Parses JSON output
 - **Failures**: Timeout → empty results, osquery crash → logged + continue
-- **LOC**: ~120 lines
 
 ### **Lua Evaluator** (lua_evaluator.cpp)
 - **Purpose**: Execute rule logic in sandboxed Lua runtime
@@ -82,7 +100,6 @@ graph TB
 - **Input**: osquery results (JSON → Lua table)
 - **Output**: Boolean (rule pass/fail)
 - **Failures**: Timeout → rule fails, Lua error → logged + rule fails
-- **LOC**: ~180 lines
 
 ### **Scoring Engine** (scoring.cpp)
 - **Purpose**: Compute weighted score from rule results
@@ -93,7 +110,6 @@ graph TB
   percentage = (score / max_possible) * 100
   ```
 - **Output**: Integer score (0-100)
-- **LOC**: ~60 lines
 
 ### **SQLite Database** (db.cpp)
 - **Purpose**: Durable persistence with crash-safe guarantees
@@ -103,6 +119,7 @@ graph TB
   - Foreign key constraints enforced
 - **Schema**:
   ```sql
+  -- Phase 1: Evaluation results
   CREATE TABLE runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts TEXT NOT NULL,            -- ISO-8601 timestamp
@@ -118,9 +135,27 @@ graph TB
     av_installed INTEGER,
     FOREIGN KEY(run_id) REFERENCES runs(id)
   );
+  
+  -- Phase 2: Delivery queue (foundation)
+  CREATE TABLE retry_queue (
+    run_id INTEGER PRIMARY KEY,
+    report_hash TEXT UNIQUE NOT NULL,
+    report_json TEXT NOT NULL,
+    attempts INTEGER DEFAULT 0,
+    state TEXT NOT NULL CHECK (state IN ('PENDING', 'DELIVERED', 'FAILED')),
+    next_retry_at TEXT,
+    created_at TEXT NOT NULL,
+    delivered_at TEXT,
+    failed_at TEXT,
+    last_error TEXT,
+    FOREIGN KEY (run_id) REFERENCES runs(id)
+  );
   ```
+- **New Methods (Phase 2 Foundation)**:
+  - `enqueue_report()` - Add report to delivery queue
+  - `load_pending_reports()` - Crash recovery
+  - `mark_delivered()`, `mark_failed()`, `update_retry()` - State transitions
 - **Guarantees**: WAL ensures durability, atomic transactions prevent partial writes
-- **LOC**: ~150 lines
 
 ### **Report Writer**
 - **Purpose**: Generate JSON report files
@@ -136,6 +171,23 @@ graph TB
   ```
 - **Location**: `reports/latest_report.json`
 - **Failures**: Disk full → logged, but doesn't prevent database persistence
+
+### **Report Hasher** (report_hasher.cpp) - Phase 2 Foundation ✅
+- **Purpose**: SHA-256 content hashing for idempotent delivery
+- **Implementation**:
+  - Standalone SHA-256 (no OpenSSL dependency)
+  - Canonicalize JSON (sorted keys via nlohmann::json)
+  - Returns 64-character hex string
+- **Use Case**: Deduplication at backend (same report = same hash)
+
+### **DeliveryClient** (delivery_client.cpp) - Phase 2 Foundation ✅
+- **Purpose**: Abstract delivery interface for protocol flexibility
+- **Implemented**:
+  - `DeliveryClient` abstract base class (pure virtual)
+  - `MockDeliveryClient` for testing (configurable success/failure)
+- **Planned**:
+  - `HttpDeliveryClient` for HTTP POST delivery
+  - `MqttDeliveryClient` for MQTT QoS 1 publish
 
 ---
 
@@ -160,7 +212,7 @@ graph TB
 
 ---
 
-## Persistence Guarantees (Current)
+## Persistence Guarantees
 
 ### What SQLite WAL Provides
 
@@ -172,12 +224,23 @@ graph TB
 
 **Crash Recovery**: WAL checkpoint on next open replays committed transactions
 
-### What Is NOT Guaranteed
+### Phase 2 Foundation Guarantees (Implemented)
 
-- **No Delivery**: Reports only persisted locally, not sent anywhere
-- **No Retry**: If persistence fails (disk full), evaluation lost
-- **No Deduplication**: Multiple runs with identical results create separate rows
-- **No Crash Recovery for In-Flight Evals**: If killed during osquery execution, eval lost
+**No Report Loss After Persistence**: Once in runs table, report survives crashes (SQLite WAL)
+
+**Idempotent Enqueue**: UNIQUE constraint on report_hash prevents duplicate queue entries
+
+**State Consistency**: CHECK constraint enforces only valid states (PENDING, DELIVERED, FAILED)
+
+**Atomic State Transitions**: Each state change is a single UPDATE (atomic)
+
+**Crash-Safe Queue**: load_pending_reports() restores PENDING reports on restart
+
+### What Is NOT Yet Guaranteed (Phase 2 Remaining)
+
+- **No Active Delivery**: Reports enqueued but not automatically delivered (RetryQueue manager not integrated)
+- **No Exponential Backoff**: Retry metadata schema exists; RetryQueue manager class pending
+- **No Backend Integration**: No HTTP/MQTT clients wired to main.cpp yet
 
 ---
 
@@ -264,31 +327,47 @@ graph TB
 
 ---
 
-## Future Extensions (Phase 2 - Not Implemented)
+## Delivery Foundation (Phase 2 - Partial)
 
-See [`docs/roadmap/`](../docs/roadmap/) for planned delivery layer:
+**✅ Implemented (Merged to master):**
+- Durable retry queue (SQLite 3-state machine)
+- SHA-256 content hashing (standalone)
+- DeliveryClient interface + MockDeliveryClient
+- Crash recovery foundation (load_pending_reports)
+- Integration test suite
 
-- Durable retry queue
-- SHA-256 content hashing
-- MQTT/HTTP delivery abstraction
-- Crash recovery for delivery
-- Idempotent backend
+**⏳ Remaining (3-4 days):**
+- HTTP delivery client
+- MQTT delivery client
+- RetryQueue manager with exponential backoff
+- Main.cpp integration
+- Minimal backend for testing
 
-**Phase 2 is fully planned but not yet implemented.**
+See [`docs/roadmap/`](../docs/roadmap/) for detailed implementation status.
 
 ---
 
 ## Source Files
 
-| File | Purpose | LOC |
-|------|---------|-----|
-| `src/main.cpp` | Orchestration, error handling | ~150 |
-| `src/osquery_runner.cpp` | osquery execution with timeout | ~120 |
-| `src/lua_evaluator.cpp` | Sandboxed Lua runtime | ~180 |
-| `src/scoring.cpp` | Weighted score computation | ~60 |
-| `src/db.cpp` | SQLite persistence (WAL) | ~150 |
-| `src/json_to_lua.cpp` | JSON → Lua table conversion | ~80 |
-| **Total** | | **~740 LOC** |
+**Phase 1 (Evaluation):**
+
+| File | Purpose |
+|------|---------|
+| `src/main.cpp` | Orchestration, error handling |
+| `src/osquery_runner.cpp` | osquery execution with timeout |
+| `src/lua_evaluator.cpp` | Sandboxed Lua runtime |
+| `src/scoring.cpp` | Weighted score computation |
+| `src/db.cpp` | SQLite persistence (WAL) |
+| `src/json_to_lua.cpp` | JSON → Lua table conversion |
+
+**Phase 2 (Delivery Foundation):**
+
+| File | Purpose |
+|------|---------|
+| `src/db.cpp` (additions) | retry_queue schema + methods |
+| `src/report_hasher.cpp` | SHA-256 content hashing |
+| `src/delivery_client.cpp` | Interface + MockDeliveryClient |
+| `test_delivery_foundation.cpp` | Integration tests |
 
 ---
 

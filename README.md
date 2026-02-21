@@ -55,34 +55,30 @@ CREATE TABLE retry_queue (
 );
 ```
 
-### Phase 2: Delivery Layer 🔄 **IN PROGRESS**
+### Phase 2: Delivery Layer 🔄 **PARTIAL**
 
-**Delivery Foundation** ✅ (Branch: `feature/delivery-foundation`)
+**Delivery Foundation** ✅ **IMPLEMENTED** (Merged to master)
 - ✅ Retry queue database schema (3-state: PENDING/DELIVERED/FAILED)
-- ✅ SHA-256 content hashing (deterministic, standalone implementation)
-- ✅ DeliveryClient interface + MockDeliveryClient
-- ✅ Queue operations (enqueue, load, mark delivered/failed)
-- ✅ Integration tests passing
+- ✅ SHA-256 content hashing (standalone implementation, no OpenSSL)
+- ✅ DeliveryClient interface with abstract base class
+- ✅ MockDeliveryClient for testing
+- ✅ Queue operations: enqueue_report, load_pending_reports, mark_delivered, mark_failed, update_retry
+- ✅ Integration test suite (all tests passing)
+- ✅ Defensive NULL checks for nullable fields
+- ✅ Dynamic timestamp handling (prevents test decay)
+- ✅ UNIQUE constraint enforcement on report_hash
 
-**Next:** HTTP delivery client, MQTT delivery client, retry queue manager
+**Remaining Work** (See [`docs/roadmap/`](docs/roadmap/) for implementation plans):
 
-**Remaining features** (documented in [`docs/roadmap/`](docs/roadmap/)):
+| Feature | Complexity | Estimate | Status |
+|---------|-----------|----------|--------|
+| HTTP Delivery Client | Low | 4-5 hours | Planned |
+| MQTT Delivery Client (QoS 1) | Medium | 6-8 hours | Planned |
+| RetryQueue Manager + Exponential Backoff | Low | 6-7 hours | Planned |
+| main.cpp Integration | Low | 4-5 hours | Planned |
+| FastAPI Backend (hash deduplication) | Low | 4-5 hours | Planned |
 
-- **At-Least-Once Delivery**: Durable retry queue with exponential backoff
-- **Content-Addressable Deduplication**: SHA-256 hashing for idempotent backend processing
-- **Protocol Abstraction**: Pluggable transports (MQTT QoS 1 primary, HTTP fallback)
-- **Crash Recovery**: Resume delivery of persisted reports after agent restart
-- **Explicit State Machine**: PENDING → RETRY → DELIVERED → FAILED states
-- **Idempotent Backend**: Minimal FastAPI server with hash-based deduplication
-
-**Timeline:** 10-12 days focused work
-
-**Planning Docs:**
-- [Implementation Plan](docs/roadmap/IMPLEMENTATION_PLAN.md) - 10-day phased approach
-- [Code Modules](docs/roadmap/CODE_MODULES.md) - Module architecture (~600 LOC total)
-- [Delivery State Machine](docs/roadmap/delivery-state-machine.md) - State transitions
-- [Failure Scenarios](docs/roadmap/failure-scenarios.md) - Network/crash recovery patterns
-- [Delivery Guarantees](docs/roadmap/delivery-guarantees.md) - Formal specifications
+**Total Remaining:** ~25-30 hours (3-4 days focused work)
 
 ---
 
@@ -135,20 +131,23 @@ Policies define security rules using osquery for data collection and Lua for eva
 
 ### Current Guarantees
 
-**What Sentinel Currently Guarantees:**
+**Implemented (Phase 1 + Delivery Foundation):**
 
 - ✅ **Deterministic Evaluation**: Same policy + same system state = same score
-- ✅ **Crash-Safe Persistence**: SQLite WAL ensures committed data survives crashes
+- ✅ **Crash-Safe Persistence**: SQLite WAL ensures committed data survives crashes  
 - ✅ **Sandboxed Execution**: Lua runtime has no file/network I/O, enforced timeouts
 - ✅ **Resource Bounds**: CPU/memory/disk usage limited by timeouts and output caps
 - ✅ **Offline Operation**: Agent works without network (local evaluation only)
+- ✅ **Content Hashing**: SHA-256 hashing for report deduplication (standalone implementation)
+- ✅ **Delivery Queue Schema**: Durable retry_queue with 3-state machine
+- ✅ **Idempotent Deduplication**: UNIQUE constraint on report_hash prevents duplicates
 
-**What Sentinel Does NOT Currently Guarantee:**
+**Not Yet Implemented (Planned Phase 2):**
 
-- ❌ **Delivery to Backend**: No network layer exists yet (Phase 2)
-- ❌ **Crash Recovery for Delivery**: No retry queue exists (Phase 2)
-- ❌ **At-Least-Once Semantics**: No delivery tracking (Phase 2)
-- ❌ **Idempotent Processing**: No hashing or deduplication (Phase 2)
+- ⏳ **Network Delivery**: No HTTP/MQTT clients exist yet
+- ⏳ **Retry Logic**: Exponential backoff not yet wired into main.cpp
+- ⏳ **Crash Recovery on Startup**: load_pending_reports() exists but not called
+- ⏳ **Backend Server**: No endpoint to receive reports
 
 ---
 
@@ -210,7 +209,7 @@ Before committing, run the three core checks:
 
 ```powershell
 .\scripts\build.ps1   # Clean build
-.\scripts\test.ps1    # Integration tests (13 assertions)
+.\scripts\test.ps1    # Integration tests
 .\scripts\run.ps1     # Phase 1 backward compatibility
 ```
 
@@ -273,14 +272,32 @@ graph LR
     A --> D[Lua Evaluator<br/>1s timeout]
     A --> E[Scoring Engine]
     A --> F[(SQLite + WAL)]
+    A --> I[JSON Report Writer]
+    
     F --> G[runs table]
     F --> H[features table]
-    A --> I[JSON Report Writer]
+    F --> J[retry_queue table<br/>PENDING/DELIVERED/FAILED]
+    
+    K[DeliveryClient<br/>Interface] --> L[MockDeliveryClient]
+    K -.planned.-> M[HttpDeliveryClient]
+    K -.planned.-> N[MqttDeliveryClient]
+    
+    O[report_hasher] --> P[SHA-256<br/>standalone]
     
     style F fill:#e1f5ff
     style C fill:#fff3e0
     style D fill:#fff3e0
+    style J fill:#d4edda
+    style K fill:#d4edda
+    style O fill:#d4edda
 ```
+
+**Legend:**
+- Solid boxes: Implemented
+- Dashed boxes: Planned for completion
+- Blue: Persistence layer
+- Orange: External process execution
+- Green: Delivery foundation (Phase 2 partial)
 
 **See:** [architecture/README.md](architecture/README.md) for detailed component descriptions.
 
@@ -339,25 +356,26 @@ Sentinel/
 
 ---
 
-## Why This Project Structure?
+## Why This Structure?
 
-**Phase 1** demonstrates:
-- Clean working code (no vaporware)
-- Crash-safe state management (SQLite WAL)
-- Security-focused design (sandboxing, timeouts, resource limits)
-- Real-world constraints (osquery quirks, Windows-specific behavior)
+**Demonstrates Engineering Depth:**
+- ✅ Working code (Phase 1: complete local evaluation engine)
+- ✅ Foundation implementation (Phase 2 partial: retry queue, hashing, abstractions)
+- ✅ Architectural planning (detailed roadmap for remaining work)
+- ✅ Production thinking (state machines, failure modes, resource bounds)
 
-**Phase 2** demonstrates:
-- Architectural planning (explicit trade-offs, failure analysis)
-- Delivery semantics thinking (at-least-once, idempotency, crash recovery)
-- Honest scope definition (single-node demonstration, not distributed scale)
-- Implementation readiness (detailed LOC estimates, dependency graph, phased timeline)
+**Honest Scope Communication:**
+- Clear separation of "implemented" vs "planned"
+- Explicit time estimates for remaining work
+- Realistic complexity assessments
+- No vaporware - working code first, then architectural plans
 
-**This structure shows:**
-- Engineering depth: Working code **+** thoughtful architecture
-- Honest communication: Clear separation of "done" vs "planned"
-- Production thinking: State machines, failure modes, resource bounds
-- Practical focus: Real implementation, not abstract theory
+**Engineering Quality Signals:**
+- Crash-safe persistence (SQLite WAL)
+- Security-focused (sandboxing, timeouts, resource limits)
+- Comprehensive testing (integration test suite + CI/CD)
+- Defensive programming (NULL checks, input validation)
+- Professional documentation (architecture docs, trade-off analysis)
 
 ---
 
@@ -365,13 +383,17 @@ Sentinel/
 
 | Document | Status | Description |
 |----------|--------|-------------|
-| **[architecture/README.md](architecture/README.md)** | Current | System architecture (Phase 1 only) |
-| **[docs/trade-offs.md](docs/trade-offs.md)** | Current | Architectural decisions and alternatives |
-| **[docs/roadmap/IMPLEMENTATION_PLAN.md](docs/roadmap/IMPLEMENTATION_PLAN.md)** | Planned | 10-day delivery layer implementation |
-| **[docs/roadmap/CODE_MODULES.md](docs/roadmap/CODE_MODULES.md)** | Planned | Module breakdown (~600 LOC) |
-| **[docs/roadmap/delivery-state-machine.md](docs/roadmap/delivery-state-machine.md)** | Planned | Explicit delivery states |
-| **[docs/roadmap/failure-scenarios.md](docs/roadmap/failure-scenarios.md)** | Planned | Network/crash recovery patterns |
-| **[docs/roadmap/delivery-guarantees.md](docs/roadmap/delivery-guarantees.md)** | Planned | Formal delivery specifications |
+| **[README.md](README.md)** | ✅ Current | Project overview and quick start |
+| **[architecture/README.md](architecture/README.md)** | ✅ Current | Detailed system architecture |
+| **[docs/trade-offs.md](docs/trade-offs.md)** | ✅ Current | Architectural decisions and alternatives |
+| **[docs/QUICK_TEST.md](docs/QUICK_TEST.md)** | ✅ Current | 5-minute pre-commit testing guide |
+| **[docs/PRE_COMMIT_TESTING.md](docs/PRE_COMMIT_TESTING.md)** | ✅ Current | Comprehensive 15-minute validation |
+| **[scripts/README.md](scripts/README.md)** | ✅ Current | Build/run/test script documentation |
+| **[docs/roadmap/IMPLEMENTATION_PLAN.md](docs/roadmap/IMPLEMENTATION_PLAN.md)** | 📋 Planning | Phased delivery layer implementation |
+| **[docs/roadmap/CODE_MODULES.md](docs/roadmap/CODE_MODULES.md)** | 📋 Planning | Module architecture and implementation plan |
+| **[docs/roadmap/delivery-state-machine.md](docs/roadmap/delivery-state-machine.md)** | 📋 Planning | Delivery state transitions |
+| **[docs/roadmap/failure-scenarios.md](docs/roadmap/failure-scenarios.md)** | 📋 Planning | Network/crash recovery patterns |
+| **[docs/roadmap/delivery-guarantees.md](docs/roadmap/delivery-guarantees.md)** | 📋 Planning | Formal delivery specifications |
 
 ---
 

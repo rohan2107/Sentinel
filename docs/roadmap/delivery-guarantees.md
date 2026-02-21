@@ -1,12 +1,17 @@
-# Delivery Guarantees (Planned)
+# Delivery Guarantees
 
-> ⚠️ **Status: Planned Feature - Not Yet Implemented**
+> 📋 **Note:** This document is now covered by [delivery-state-machine.md](delivery-state-machine.md).
 >
-> This document describes the delivery semantics that will be implemented in Phase 2.
-> Currently (Phase 1), Sentinel only implements local evaluation and SQLite persistence.
-> None of the delivery guarantees below are active in the master branch.
+> See delivery-state-machine.md for:
+> - Current implementation status (foundation complete)
+> - Actual 3-state machine guarantees
+> - Recovery scenarios
+>
+> The content below is retained for reference but may not reflect the actual implemented design.
 
 ---
+
+## Original Planning Document (Archived)
 
 ## Planned Delivery Semantics
 

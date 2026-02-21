@@ -1,10 +1,18 @@
-# Failure Scenarios (Planned)
+# Failure Scenarios
 
-> ⚠️ **Status: Planned Feature - Not Yet Implemented**
+> 📋 **Note:** This document is now covered by [delivery-state-machine.md](delivery-state-machine.md).
 >
-> This document describes failure handling for the delivery layer (Phase 2).
-> Current implementation only handles local evaluation failures (osquery timeout, Lua errors, disk full).
-> Network and delivery failure scenarios described below are not yet implemented.
+> See delivery-state-machine.md for:
+> - Implementation-aligned recovery scenarios
+> - Actual 3-state machine behavior
+> - Backoff strategy
+> - Monitoring queries
+>
+> The content below is retained for reference but may not reflect the actual implemented design.
+
+---
+
+## Original Planning Document (Archived)
 
 Analysis of failure modes, detection, and recovery mechanisms for the planned delivery layer.
 
