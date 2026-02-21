@@ -1,7 +1,6 @@
 # Pre-Commit Testing Guide
 
-**Branch:** `feature/delivery-foundation`  
-**Target:** Merge to `master`
+**Purpose:** Comprehensive validation before merging to `master`
 
 ## Quick Validation (5 minutes)
 
@@ -20,7 +19,7 @@ Run these commands in order. All must pass before commit.
 
 **Expected Results:**
 - Build completes with no errors
-- All 13 test assertions pass
+- All integration tests pass
 - Sentinel runs successfully, generates report, persists to SQLite
 
 ---
@@ -51,11 +50,11 @@ cmake --build build --config Release
 ```
 
 **Pass Criteria:**
-- [ ] Hash determinism test passes (2 assertions)
-- [ ] Mock client test passes (4 assertions)
-- [ ] Retry queue test passes (9 assertions)
-- [ ] End-to-end test passes (2 assertions)
-- [ ] **Total: 13 assertions pass**
+- [ ] Hash determinism test passes
+- [ ] Mock client test passes
+- [ ] Retry queue operations test passes
+- [ ] End-to-end delivery flow test passes
+- [ ] **All integration tests pass**
 - [ ] No test database files left behind (test_sentinel.db, integration_test.db deleted)
 
 **Spot Check:**
@@ -259,7 +258,7 @@ Before running `git commit`, verify:
 - [ ] Code comments explain non-obvious logic
 
 ### Testing
-- [ ] All automated tests pass (13 assertions)
+- [ ] All automated tests pass
 - [ ] Phase 1 functionality verified (backward compatible)
 - [ ] CLI argument handling tested (all modes)
 - [ ] Edge cases handled gracefully
@@ -306,7 +305,7 @@ Implements Phase 2 delivery infrastructure:
 - SHA-256 report hashing for deduplication
 - DeliveryClient interface + MockDeliveryClient
 - Database queue operations (enqueue, load, mark_delivered, mark_failed, update_retry)
-- Integration test suite (13 assertions)
+- Integration test suite
 - CI/CD pipeline with automated tests
 
 Fixes:
@@ -370,7 +369,7 @@ sqlite3 sentinel_data.sqlite3 "PRAGMA integrity_check;"
 All green = ready to commit:
 
 - ✅ Clean build (Debug + Release)
-- ✅ All 13 tests pass
+- ✅ All integration tests pass
 - ✅ Phase 1 functionality works
 - ✅ No CLI warnings
 - ✅ Database schema correct

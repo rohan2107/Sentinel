@@ -170,7 +170,7 @@ int get_last_run_id();
 - Atomic INSERT/UPDATE operations
 - UNIQUE constraint enforcement on report_hash
 
-**Tests:** ✅ Passing (9 assertions)
+**Tests:** ✅ Passing
 - Enqueue report after persist_run
 - Load pending reports (filters by state and next_retry_at)
 - Mark delivered (state transition PENDING → DELIVERED)
@@ -451,7 +451,7 @@ def receive_report(report: dict, hash: str):
 ## Summary
 
 | Module | New/Modified | Purpose |
-|--------|--------------|---------||
+|--------|--------------|---------|
 | `report_hasher.cpp` | NEW | SHA-256 hashing |
 | `delivery_client.cpp` | NEW | HTTP abstraction |
 | `retry_queue.cpp` | NEW | Queue + backoff |

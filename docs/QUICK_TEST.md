@@ -43,7 +43,7 @@
 Before pushing to GitHub:
 
 - [ ] Clean build passes
-- [ ] All 13 tests pass
+- [ ] All integration tests pass
 - [ ] Phase 1 functionality works (backward compatible)
 - [ ] No CLI warnings when running
 - [ ] Database file exists and updated: `(Get-Item sentinel_data.sqlite3).LastWriteTime`

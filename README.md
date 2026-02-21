@@ -59,11 +59,11 @@ CREATE TABLE retry_queue (
 
 **Delivery Foundation** ✅ **IMPLEMENTED** (Merged to master)
 - ✅ Retry queue database schema (3-state: PENDING/DELIVERED/FAILED)
-- ✅ SHA-256 content hashing (140-line standalone implementation, no OpenSSL)
+- ✅ SHA-256 content hashing (standalone implementation, no OpenSSL)
 - ✅ DeliveryClient interface with abstract base class
 - ✅ MockDeliveryClient for testing
 - ✅ Queue operations: enqueue, load_pending, mark_delivered, mark_failed, update_retry
-- ✅ Integration test suite (13 assertions, all passing)
+- ✅ Integration test suite (all tests passing)
 - ✅ Defensive NULL checks for nullable fields
 - ✅ Dynamic timestamp handling (prevents test decay)
 - ✅ UNIQUE constraint enforcement on report_hash
@@ -209,7 +209,7 @@ Before committing, run the three core checks:
 
 ```powershell
 .\scripts\build.ps1   # Clean build
-.\scripts\test.ps1    # Integration tests (13 assertions)
+.\scripts\test.ps1    # Integration tests
 .\scripts\run.ps1     # Phase 1 backward compatibility
 ```
 
@@ -294,7 +294,7 @@ graph LR
 
 **Legend:**
 - Solid boxes: Implemented
-- Dashed boxes: Planned (not yet implemented)
+- Dashed boxes: Planned for completion
 - Blue: Persistence layer
 - Orange: External process execution
 - Green: Delivery foundation (Phase 2 partial)
@@ -373,7 +373,7 @@ Sentinel/
 **Engineering Quality Signals:**
 - Crash-safe persistence (SQLite WAL)
 - Security-focused (sandboxing, timeouts, resource limits)
-- Comprehensive testing (13 integration tests + CI/CD)
+- Comprehensive testing (integration test suite + CI/CD)
 - Defensive programming (NULL checks, input validation)
 - Professional documentation (architecture docs, trade-off analysis)
 

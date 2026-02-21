@@ -1,9 +1,9 @@
 # Implementation Plan: Delivery Layer
 
-> **Status:** Foundation ✅ Complete (3 days) | Remaining ⏳ Planned (3-4 days)
+> **Status:** Foundation ✅ Complete | Remaining ⏳ Planned (~4 days)
 >
 > Phase 1-3 (schema, hashing, delivery abstraction) are implemented and merged to master.
-> Phases 4-6 (retry manager, integration, backend) remain.
+> Phases 4-7 (HTTP/MQTT clients, retry manager, integration, backend) remain.
 
 ## Overview
 
@@ -18,11 +18,11 @@ Add at-least-once delivery semantics to Sentinel with:
 - ⏳ Main.cpp integration
 - ⏳ Minimal idempotent backend
 
-**Time Estimate:** ~~10-12 days~~ → **3 days done** ✅ + **3-4 days remaining** ⏳
+**Time Estimate:** Foundation complete ✅ + Remaining work ~4 days ⏳
 
 ---
 
-## ✅ Phase 1: Schema & State Machine (Days 1-2) - COMPLETE
+## ✅ Phase 1: Schema & State Machine - COMPLETE
 
 **Status:** ✅ Implemented, merged to master
 
@@ -65,7 +65,7 @@ PENDING
 
 ---
 
-## ✅ Phase 2: SHA-256 Hashing (Day 3) - COMPLETE
+## ✅ Phase 2: SHA-256 Hashing - COMPLETE
 
 **Status:** ✅ Implemented, merged to master
 
@@ -105,7 +105,7 @@ std::string canonicalize_json(const nlohmann::json& j);
 
 ---
 
-## ✅ Phase 3: Delivery Client Abstraction (Days 4-6) - FOUNDATION COMPLETE
+## ✅ Phase 3: Delivery Client Abstraction - FOUNDATION COMPLETE
 
 ### DeliveryClient Interface
 
@@ -174,7 +174,7 @@ private:
 
 ---
 
-## ⏳ Phase 4: HTTP/MQTT Client Implementations (Days 7-8) - PLANNED
+## ⏳ Phase 4: HTTP/MQTT Client Implementations - PLANNED
 
 ### Planned: HTTP Delivery Client
 
@@ -201,7 +201,7 @@ private:
 
 ---
 
-## ⏳ Phase 5: Retry Queue Manager (Day 9) - PLANNED
+## ⏳ Phase 5: Retry Queue Manager - PLANNED
 
 ### RetryQueue Class
 
@@ -261,7 +261,7 @@ std::string next_retry = iso8601_now_plus_seconds(backoff_s + jitter_s);
 
 ---
 
-## ⏳ Phase 6: Main.cpp Integration (Day 10) - PLANNED
+## ⏳ Phase 6: Main.cpp Integration - PLANNED
 
 ### main.cpp Changes
 
@@ -308,7 +308,7 @@ int main(int argc, char** argv) {
 
 ---
 
-## ⏳ Phase 7: Minimal Backend (Day 11) - PLANNED
+## ⏳ Phase 7: Minimal Backend - PLANNED
 
 ### FastAPI Server
 
@@ -445,7 +445,7 @@ uvicorn server:app --reload --port 8000
 - `src/retry_queue.h` + `src/retry_queue.cpp`
 - `backend/server.py`
 - `backend/requirements.txt`
-- `tests/test_delivery.cpp` (optional)
+- `test_delivery.cpp` (optional)
 
 ### Modified Files
 

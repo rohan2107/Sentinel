@@ -239,7 +239,7 @@ See [`docs/roadmap/IMPLEMENTATION_PLAN.md`](../docs/roadmap/IMPLEMENTATION_PLAN.
 ### What Is NOT Yet Guaranteed (Phase 2 Remaining)
 
 - **No Active Delivery**: Reports enqueued but not automatically delivered (RetryQueue manager not integrated)
-- **No Exponential Backoff**: Retry metadata schema exists but manager class not implemented
+- **No Exponential Backoff**: Retry metadata schema exists; RetryQueue manager class pending
 - **No Backend Integration**: No HTTP/MQTT clients wired to main.cpp yet
 
 ---
@@ -352,7 +352,7 @@ See [`docs/roadmap/`](../docs/roadmap/) for detailed implementation status.
 **Phase 1 (Evaluation):**
 
 | File | Purpose |
-|------|---------||
+|------|---------|
 | `src/main.cpp` | Orchestration, error handling |
 | `src/osquery_runner.cpp` | osquery execution with timeout |
 | `src/lua_evaluator.cpp` | Sandboxed Lua runtime |
@@ -363,11 +363,11 @@ See [`docs/roadmap/`](../docs/roadmap/) for detailed implementation status.
 **Phase 2 (Delivery Foundation):**
 
 | File | Purpose |
-|------|---------||
+|------|---------|
 | `src/db.cpp` (additions) | retry_queue schema + methods |
 | `src/report_hasher.cpp` | SHA-256 content hashing |
 | `src/delivery_client.cpp` | Interface + MockDeliveryClient |
-| `tests/test_delivery_foundation.cpp` | Integration tests |
+| `test_delivery_foundation.cpp` | Integration tests |
 
 ---
 

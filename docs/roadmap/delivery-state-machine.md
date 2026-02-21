@@ -13,7 +13,7 @@ Explicit 3-state machine ensuring at-least-once delivery with durable persistenc
 - Database operations: enqueue, load_pending, mark_delivered, mark_failed, update_retry
 - SHA-256 content hashing (standalone)
 - DeliveryClient abstract interface + MockDeliveryClient
-- Integration tests (13 assertions covering all state transitions)
+- Integration tests covering all state transitions
 
 **⏳ Remaining Work:**
 - HTTP/MQTT delivery client implementations
