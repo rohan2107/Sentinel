@@ -25,6 +25,7 @@ Sentinel provides both Command Prompt (.bat) and PowerShell 7 (.ps1) build scrip
 ```powershell
 .\scripts\test.ps1 -Config Debug    # or Release
 ```
+*Runs delivery foundation integration tests (13 assertions)*
 
 **Smoketest (Build + Run + Verify):**
 ```powershell
@@ -67,6 +68,7 @@ scripts\run.bat policies\sample_policy.json
 ```cmd
 scripts\test.bat Debug
 ```
+*Runs delivery foundation integration tests (13 assertions)*
 
 **Smoketest:**
 ```cmd

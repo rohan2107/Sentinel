@@ -1,27 +1,30 @@
 # Implementation Plan: Delivery Layer
 
-> ⚠️ **Status: Planned Feature - Not Yet Implemented**
+> **Status:** Foundation ✅ Complete (3 days) | Remaining ⏳ Planned (3-4 days)
 >
-> This document describes the delivery layer implementation plan for Phase 2.
-> None of these features exist in the master branch yet.
+> Phase 1-3 (schema, hashing, delivery abstraction) are implemented and merged to master.
+> Phases 4-6 (retry manager, integration, backend) remain.
 
 ## Overview
 
 Add at-least-once delivery semantics to Sentinel with:
-- Durable retry queue (SQLite)
-- SHA-256 content hashing
-- Delivery abstraction (interface-based)
-- MQTT QoS 1 delivery (primary, via paho-mqttpp3)
-- HTTP delivery (fallback/testing, via cpp-httplib)
-- Exponential backoff retry
-- Crash recovery
-- Minimal idempotent backend
+- ✅ Durable retry queue (SQLite 3-state machine)
+- ✅ SHA-256 content hashing (standalone, 140 LOC)
+- ✅ Delivery abstraction (interface-based)
+- ⏳ MQTT QoS 1 delivery (primary, via paho-mqttpp3)
+- ⏳ HTTP delivery (fallback/testing, via cpp-httplib)
+- ⏳ Exponential backoff retry (manager class)
+- ✅ Crash recovery (foundation: load_pending_reports)
+- ⏳ Main.cpp integration
+- ⏳ Minimal idempotent backend
 
-**Time Estimate:** 10-12 days focused work
+**Time Estimate:** ~~10-12 days~~ → **3 days done** ✅ + **3-4 days remaining** ⏳
 
 ---
 
-## Phase 1: Schema & State Machine (Days 1-2)
+## ✅ Phase 1: Schema & State Machine (Days 1-2) - COMPLETE
+
+**Status:** ✅ Implemented, merged to master
 
 ### retry_queue Table
 
@@ -31,7 +34,7 @@ CREATE TABLE IF NOT EXISTS retry_queue (
     report_hash TEXT UNIQUE NOT NULL,
     report_json TEXT NOT NULL,
     attempts INTEGER DEFAULT 0,
-    state TEXT NOT NULL CHECK (state IN ('PENDING', 'RETRY_PENDING', 'DELIVERED', 'FAILED')),
+    state TEXT NOT NULL CHECK (state IN ('PENDING', 'DELIVERED', 'FAILED')),
     next_retry_at TEXT,
     created_at TEXT NOT NULL,
     delivered_at TEXT,
@@ -44,29 +47,27 @@ CREATE INDEX IF NOT EXISTS idx_retry_state ON retry_queue(state, next_retry_at);
 CREATE INDEX IF NOT EXISTS idx_retry_hash ON retry_queue(report_hash);
 ```
 
+**Implementation Notes:**
+- Simplified to 3-state machine (removed RETRY_PENDING - single agent doesn't need it)
+- Added defensive NULL handling in C++ code (COALESCE in SQL, pointer checks)
+- Atomic state transitions via single UPDATE statements
+
 ### State Transitions
 
 ```
 PENDING
   ├─→ DELIVERED (delivery success)
-  └─→ RETRY_PENDING (delivery failed, attempts < 10)
-      ├─→ DELIVERED (retry success)
-      └─→ FAILED (attempts >= 10)
+  ├─→ PENDING (retry with updated attempts, single state machine)
+  └─→ FAILED (attempts >= max_retries)
 ```
 
-### State Persistence Boundaries
-
-| Transition | Persisted | Action |
-|------------|-----------|--------|
-| **Eval Complete** → REPORT_PERSISTED | `INSERT runs`, `INSERT features` | SQLite COMMIT |
-| **Report Persisted** → PENDING | `INSERT retry_queue (state='PENDING')` | Queue for delivery |
-| **Delivery Attempt** → RETRY_PENDING | `UPDATE attempts++, next_retry_at, last_error` | Network failed |
-| **Delivery Success** → DELIVERED | `UPDATE state='DELIVERED', delivered_at` | Backend ACKed |
-| **Max Retries** → FAILED | `UPDATE state='FAILED', failed_at` | Terminal |
+**See:** [delivery-state-machine.md](delivery-state-machine.md) for complete state machine documentation
 
 ---
 
-## Phase 2: SHA-256 Hashing (Day 3)
+## ✅ Phase 2: SHA-256 Hashing (Day 3) - COMPLETE
+
+**Status:** ✅ Implemented, merged to master (140 LOC)
 
 ### Report Hash Computation
 
@@ -85,10 +86,15 @@ std::string canonicalize_json(const nlohmann::json& j);
 
 ### Implementation
 
-- Use library: OpenSSL `SHA256()` or standalone sha256.cpp
-- Canonicalize JSON: sorted keys, compact format (no whitespace)
-- Hash the canonical string
-- Return hex-encoded hash (64 chars)
+**What Was Built:**
+- Standalone SHA-256 implementation (no OpenSSL dependency) - 125 LOC
+- Canonicalization leverages nlohmann::json's alphabetical key ordering (std::map)
+- Returns 64-character hex string
+- Fully tested (hash determinism, key order independence)
+
+**Files:**
+- `src/report_hasher.h` (15 LOC)
+- `src/report_hasher.cpp` (125 LOC)
 
 ### Why
 
@@ -99,7 +105,7 @@ std::string canonicalize_json(const nlohmann::json& j);
 
 ---
 
-## Phase 3: Delivery Client Abstraction (Days 4-6)
+## ✅ Phase 3: Delivery Client Abstraction (Days 4-6) - FOUNDATION COMPLETE
 
 ### DeliveryClient Interface
 
@@ -158,7 +164,30 @@ private:
 };
 ```
 
-### MQTT Implementation (Primary)
+**Implementation Status:**
+- ✅ DeliveryClient interface defined (35 LOC)
+- ✅ MockDeliveryClient implemented for testing (40 LOC)
+- ⏳ MqttDeliveryClient planned (~120 LOC)
+- ⏳ HttpDeliveryClient planned (~80 LOC)
+
+**See:** [CODE_MODULES.md](CODE_MODULES.md) for detailed API specs
+
+---
+
+## ⏳ Phase 4: HTTP/MQTT Client Implementations (Days 7-8) - PLANNED
+
+### Planned: HTTP Delivery Client (~80 LOC)
+
+- Library: cpp-httplib (header-only)
+- POST to `{backend_url}/reports`
+- Body: `{"report": <report_json>, "hash": <sha256>}`
+- Header: `X-Report-Hash: <sha256>`
+- Timeout: 30s
+- Success: HTTP 200/201/409 (409 = duplicate, treated as success)
+- Retry: HTTP 5xx, network errors
+- Terminal: HTTP 400 (malformed request)
+
+### Planned: MQTT Delivery Client (~120 LOC)
 
 - Library: paho-mqttpp3 (Eclipse Paho MQTT C++ client)
 - Broker: localhost:1883 (Mosquitto for dev)
@@ -169,33 +198,10 @@ private:
 - Timeout: 30s
 - Success: PUBACK received
 - Retry: Connection failure, timeout
-- Reconnect: Automatic with exponential backoff
-
-**Why MQTT Primary:**
-- Broker persistence (clean_session=false)
-- QoS 1 guarantees delivery acknowledgement
-- Efficient binary protocol
-- Aligns with CV claim (MQTT experience)
-
-### HTTP Implementation (Fallback/Testing)
-
-- Library: libcurl or cpp-httplib (header-only)
-- POST to `{backend_url}/reports`
-- Body: `{"report": <report_json>, "hash": <sha256>}`
-- Header: `X-Report-Hash: <sha256>`
-- Timeout: 30s
-- Success: HTTP 200/201
-- Retry: HTTP 5xx, network errors
-- Terminal: HTTP 400 (malformed), 409 (duplicate treated as success)
-
-**Why HTTP Fallback:**
-- Trivial local testing (no broker required)
-- Standard REST debugging (curl, Postman)
-- Firewall-friendly (port 443)
 
 ---
 
-## Phase 4: Retry Queue Manager (Days 7-8)
+## ⏳ Phase 5: Retry Queue Manager (Day 9) - PLANNED
 
 ### RetryQueue Class
 
@@ -247,9 +253,17 @@ int jitter_s = rand() % (backoff_s / 4);       // ±25% jitter
 std::string next_retry = iso8601_now_plus_seconds(backoff_s + jitter_s);
 ```
 
+**Implementation Status:**
+- ✅ QueuedReport struct exists in db.h
+- ✅ load_pending_reports() implemented (crash recovery)
+- ⏳ RetryQueue manager class planned (~150 LOC)
+- ⏳ Exponential backoff logic planned
+
+**Estimated LOC:** ~150 lines
+
 ---
 
-## Phase 5: Integration (Day 9)
+## ⏳ Phase 6: Main.cpp Integration (Day 10) - PLANNED
 
 ### main.cpp Changes
 
@@ -294,9 +308,11 @@ int main(int argc, char** argv) {
 }
 ```
 
+**Estimated LOC Added:** ~100 lines
+
 ---
 
-## Phase 6: Minimal Backend (Days 10-11)
+## ⏳ Phase 7: Minimal Backend (Day 11) - PLANNED
 
 ### FastAPI Server
 

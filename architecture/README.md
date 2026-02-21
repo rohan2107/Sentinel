@@ -1,8 +1,8 @@
-# Sentinel Architecture (Current Implementation)
+# Sentinel Architecture
 
-Local security compliance evaluation agent with deterministic policy execution and durable persistence.
+Local security compliance evaluation agent with deterministic policy execution, durable persistence, and delivery foundation.
 
-## System Architecture (Phase 1 - Implemented)
+## System Architecture
 
 ```mermaid
 graph TB
@@ -15,6 +15,10 @@ graph TB
         DB[(SQLite<br/>WAL Mode)]
         RW[Report Writer<br/>JSON]
         
+        RH[Report Hasher<br/>SHA-256]
+        DC[DeliveryClient<br/>Interface]
+        MOCK[MockDeliveryClient<br/>Testing]
+        
         M --> PV
         PV --> M
         M --> OR
@@ -22,12 +26,17 @@ graph TB
         LE --> SC
         SC --> DB
         DB --> RW
+        
+        RW --> RH
+        RH --> DB
+        DB --> DC
+        DC --> MOCK
     end
     
     subgraph "Filesystem"
         POL[policies/<br/>sample_policy.json]
         REP[reports/<br/>latest_report.json]
-        DBFILE[(sentinel_data.sqlite3<br/>runs + features tables)]
+        DBFILE[(sentinel_data.sqlite3<br/>runs + features + retry_queue)]
     end
     
     M -.reads.-> POL
@@ -36,12 +45,23 @@ graph TB
     
     classDef storage fill:#e1f5ff,stroke:#01579b
     classDef compute fill:#fff3e0,stroke:#e65100
+    classDef delivery fill:#e8f5e9,stroke:#2e7d32
     
     class DB,DBFILE storage
     class M,PV,OR,LE,SC,RW compute
+    class RH,DC,MOCK delivery
 ```
 
-## Components (Current)
+## Implementation Status
+
+**Phase 1 (Local Evaluation):** ✅ Complete (~740 LOC)
+**Phase 2 (Delivery Foundation):** ✅ Partial (~565 LOC implemented, ~450 LOC remaining)
+
+See [`docs/roadmap/IMPLEMENTATION_PLAN.md`](../docs/roadmap/IMPLEMENTATION_PLAN.md) for detailed breakdown.
+
+---
+
+## Components
 
 ### **main.cpp** - Agent Orchestrator
 - **Purpose**: Controls evaluation lifecycle, error handling, resource cleanup
@@ -103,6 +123,7 @@ graph TB
   - Foreign key constraints enforced
 - **Schema**:
   ```sql
+  -- Phase 1: Evaluation results
   CREATE TABLE runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts TEXT NOT NULL,            -- ISO-8601 timestamp
@@ -118,9 +139,28 @@ graph TB
     av_installed INTEGER,
     FOREIGN KEY(run_id) REFERENCES runs(id)
   );
+  
+  -- Phase 2: Delivery queue (foundation)
+  CREATE TABLE retry_queue (
+    run_id INTEGER PRIMARY KEY,
+    report_hash TEXT UNIQUE NOT NULL,
+    report_json TEXT NOT NULL,
+    attempts INTEGER DEFAULT 0,
+    state TEXT NOT NULL CHECK (state IN ('PENDING', 'DELIVERED', 'FAILED')),
+    next_retry_at TEXT,
+    created_at TEXT NOT NULL,
+    delivered_at TEXT,
+    failed_at TEXT,
+    last_error TEXT,
+    FOREIGN KEY (run_id) REFERENCES runs(id)
+  );
   ```
+- **New Methods (Phase 2 Foundation)**:
+  - `enqueue_report()` - Add report to delivery queue
+  - `load_pending_reports()` - Crash recovery
+  - `mark_delivered()`, `mark_failed()`, `update_retry()` - State transitions
 - **Guarantees**: WAL ensures durability, atomic transactions prevent partial writes
-- **LOC**: ~150 lines
+- **LOC**: ~250 lines (150 Phase 1 + 100 Phase 2)
 
 ### **Report Writer**
 - **Purpose**: Generate JSON report files
@@ -136,6 +176,25 @@ graph TB
   ```
 - **Location**: `reports/latest_report.json`
 - **Failures**: Disk full → logged, but doesn't prevent database persistence
+
+### **Report Hasher** (report_hasher.cpp) - Phase 2 Foundation ✅
+- **Purpose**: SHA-256 content hashing for idempotent delivery
+- **Implementation**:
+  - Standalone SHA-256 (no OpenSSL dependency)
+  - Canonicalize JSON (sorted keys via nlohmann::json)
+  - Returns 64-character hex string
+- **Use Case**: Deduplication at backend (same report = same hash)
+- **LOC**: ~140 lines
+
+### **DeliveryClient** (delivery_client.cpp) - Phase 2 Foundation ✅
+- **Purpose**: Abstract delivery interface for protocol flexibility
+- **Implemented**:
+  - `DeliveryClient` abstract base class (pure virtual)
+  - `MockDeliveryClient` for testing (configurable success/failure)
+- **Planned**:
+  - `HttpDeliveryClient` for HTTP POST delivery (~80 LOC)
+  - `MqttDeliveryClient` for MQTT QoS 1 publish (~120 LOC)
+- **LOC**: ~75 lines (interface + mock)
 
 ---
 
@@ -160,7 +219,7 @@ graph TB
 
 ---
 
-## Persistence Guarantees (Current)
+## Persistence Guarantees
 
 ### What SQLite WAL Provides
 
@@ -172,12 +231,23 @@ graph TB
 
 **Crash Recovery**: WAL checkpoint on next open replays committed transactions
 
-### What Is NOT Guaranteed
+### Phase 2 Foundation Guarantees (Implemented)
 
-- **No Delivery**: Reports only persisted locally, not sent anywhere
-- **No Retry**: If persistence fails (disk full), evaluation lost
-- **No Deduplication**: Multiple runs with identical results create separate rows
-- **No Crash Recovery for In-Flight Evals**: If killed during osquery execution, eval lost
+**No Report Loss After Persistence**: Once in runs table, report survives crashes (SQLite WAL)
+
+**Idempotent Enqueue**: UNIQUE constraint on report_hash prevents duplicate queue entries
+
+**State Consistency**: CHECK constraint enforces only valid states (PENDING, DELIVERED, FAILED)
+
+**Atomic State Transitions**: Each state change is a single UPDATE (atomic)
+
+**Crash-Safe Queue**: load_pending_reports() restores PENDING reports on restart
+
+### What Is NOT Yet Guaranteed (Phase 2 Remaining)
+
+- **No Active Delivery**: Reports enqueued but not automatically delivered (RetryQueue manager not integrated)
+- **No Exponential Backoff**: Retry metadata schema exists but manager class not implemented
+- **No Backend Integration**: No HTTP/MQTT clients wired to main.cpp yet
 
 ---
 
@@ -264,21 +334,29 @@ graph TB
 
 ---
 
-## Future Extensions (Phase 2 - Not Implemented)
+## Delivery Foundation (Phase 2 - Partial)
 
-See [`docs/roadmap/`](../docs/roadmap/) for planned delivery layer:
+**✅ Implemented (Merged to master):**
+- Durable retry queue (SQLite 3-state machine)
+- SHA-256 content hashing (standalone, 140 LOC)
+- DeliveryClient interface + MockDeliveryClient
+- Crash recovery foundation (load_pending_reports)
+- 13 integration tests
 
-- Durable retry queue
-- SHA-256 content hashing
-- MQTT/HTTP delivery abstraction
-- Crash recovery for delivery
-- Idempotent backend
+**⏳ Remaining (~450 LOC, 3-4 days):**
+- HTTP delivery client (~80 LOC)
+- MQTT delivery client (~120 LOC)
+- RetryQueue manager with exponential backoff (~150 LOC)
+- Main.cpp integration (~100 LOC)
+- Minimal backend for testing
 
-**Phase 2 is fully planned but not yet implemented.**
+See [`docs/roadmap/`](../docs/roadmap/) for detailed implementation status.
 
 ---
 
 ## Source Files
+
+**Phase 1 (Evaluation):**
 
 | File | Purpose | LOC |
 |------|---------|-----|
@@ -288,7 +366,19 @@ See [`docs/roadmap/`](../docs/roadmap/) for planned delivery layer:
 | `src/scoring.cpp` | Weighted score computation | ~60 |
 | `src/db.cpp` | SQLite persistence (WAL) | ~150 |
 | `src/json_to_lua.cpp` | JSON → Lua table conversion | ~80 |
-| **Total** | | **~740 LOC** |
+| **Phase 1 Subtotal** | | **~740 LOC** |
+
+**Phase 2 (Delivery Foundation):**
+
+| File | Purpose | LOC |
+|------|---------|-----|
+| `src/db.cpp` (additions) | retry_queue schema + methods | +100 |
+| `src/report_hasher.cpp` | SHA-256 content hashing | ~140 |
+| `src/delivery_client.cpp` | Interface + MockDeliveryClient | ~75 |
+| `tests/test_delivery_foundation.cpp` | Integration tests (13 assertions) | ~200 |
+| **Phase 2 Subtotal (Implemented)** | | **~515 LOC** |
+
+**Total Implemented:** **~1,255 LOC**
 
 ---
 
