@@ -11,7 +11,7 @@ Explicit 3-state machine ensuring at-least-once delivery with durable persistenc
 **✅ Implemented (Foundation layer):**
 - retry_queue table schema with 3-state CHECK constraint
 - Database operations: enqueue, load_pending, mark_delivered, mark_failed, update_retry
-- SHA-256 content hashing (standalone, 140 LOC)
+- SHA-256 content hashing (standalone)
 - DeliveryClient abstract interface + MockDeliveryClient
 - Integration tests (13 assertions covering all state transitions)
 

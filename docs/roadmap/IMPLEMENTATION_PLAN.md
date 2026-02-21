@@ -9,12 +9,12 @@
 
 Add at-least-once delivery semantics to Sentinel with:
 - ✅ Durable retry queue (SQLite 3-state machine)
-- ✅ SHA-256 content hashing (standalone, 140 LOC)
+- ✅ SHA-256 content hashing (standalone)
 - ✅ Delivery abstraction (interface-based)
 - ⏳ MQTT QoS 1 delivery (primary, via paho-mqttpp3)
 - ⏳ HTTP delivery (fallback/testing, via cpp-httplib)
 - ⏳ Exponential backoff retry (manager class)
-- ✅ Crash recovery (foundation: load_pending_reports)
+- ⏳ Crash recovery (DB query `load_pending_reports` implemented; startup wiring pending)
 - ⏳ Main.cpp integration
 - ⏳ Minimal idempotent backend
 
@@ -67,7 +67,7 @@ PENDING
 
 ## ✅ Phase 2: SHA-256 Hashing (Day 3) - COMPLETE
 
-**Status:** ✅ Implemented, merged to master (140 LOC)
+**Status:** ✅ Implemented, merged to master
 
 ### Report Hash Computation
 
@@ -87,14 +87,14 @@ std::string canonicalize_json(const nlohmann::json& j);
 ### Implementation
 
 **What Was Built:**
-- Standalone SHA-256 implementation (no OpenSSL dependency) - 125 LOC
+- Standalone SHA-256 implementation (no OpenSSL dependency)
 - Canonicalization leverages nlohmann::json's alphabetical key ordering (std::map)
 - Returns 64-character hex string
 - Fully tested (hash determinism, key order independence)
 
 **Files:**
-- `src/report_hasher.h` (15 LOC)
-- `src/report_hasher.cpp` (125 LOC)
+- `src/report_hasher.h`
+- `src/report_hasher.cpp`
 
 ### Why
 
@@ -165,10 +165,10 @@ private:
 ```
 
 **Implementation Status:**
-- ✅ DeliveryClient interface defined (35 LOC)
-- ✅ MockDeliveryClient implemented for testing (40 LOC)
-- ⏳ MqttDeliveryClient planned (~120 LOC)
-- ⏳ HttpDeliveryClient planned (~80 LOC)
+- ✅ DeliveryClient interface defined
+- ✅ MockDeliveryClient implemented for testing
+- ⏳ MqttDeliveryClient planned
+- ⏳ HttpDeliveryClient planned
 
 **See:** [CODE_MODULES.md](CODE_MODULES.md) for detailed API specs
 
@@ -176,7 +176,7 @@ private:
 
 ## ⏳ Phase 4: HTTP/MQTT Client Implementations (Days 7-8) - PLANNED
 
-### Planned: HTTP Delivery Client (~80 LOC)
+### Planned: HTTP Delivery Client
 
 - Library: cpp-httplib (header-only)
 - POST to `{backend_url}/reports`
@@ -187,7 +187,7 @@ private:
 - Retry: HTTP 5xx, network errors
 - Terminal: HTTP 400 (malformed request)
 
-### Planned: MQTT Delivery Client (~120 LOC)
+### Planned: MQTT Delivery Client
 
 - Library: paho-mqttpp3 (Eclipse Paho MQTT C++ client)
 - Broker: localhost:1883 (Mosquitto for dev)
@@ -256,10 +256,8 @@ std::string next_retry = iso8601_now_plus_seconds(backoff_s + jitter_s);
 **Implementation Status:**
 - ✅ QueuedReport struct exists in db.h
 - ✅ load_pending_reports() implemented (crash recovery)
-- ⏳ RetryQueue manager class planned (~150 LOC)
+- ⏳ RetryQueue manager class planned
 - ⏳ Exponential backoff logic planned
-
-**Estimated LOC:** ~150 lines
 
 ---
 
@@ -307,8 +305,6 @@ int main(int argc, char** argv) {
     return 0;
 }
 ```
-
-**Estimated LOC Added:** ~100 lines
 
 ---
 
@@ -491,7 +487,7 @@ pydantic==2.5.0
 |------|------------|
 | libcurl complex | Use cpp-httplib (header-only, simpler) |
 | OpenSSL overkill | Use standalone sha256.cpp (public domain) |
-| Backend complexity | Keep minimal (< 100 LOC) |
+| Backend complexity | Keep minimal |
 | Time overrun | Cut backend to mock client first |
 
 ---

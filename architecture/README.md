@@ -54,8 +54,8 @@ graph TB
 
 ## Implementation Status
 
-**Phase 1 (Local Evaluation):** ✅ Complete (~740 LOC)
-**Phase 2 (Delivery Foundation):** ✅ Partial (~565 LOC implemented, ~450 LOC remaining)
+**Phase 1 (Local Evaluation):** ✅ Complete
+**Phase 2 (Delivery Foundation):** ✅ Partial (foundation merged, integration pending)
 
 See [`docs/roadmap/IMPLEMENTATION_PLAN.md`](../docs/roadmap/IMPLEMENTATION_PLAN.md) for detailed breakdown.
 
@@ -71,7 +71,6 @@ See [`docs/roadmap/IMPLEMENTATION_PLAN.md`](../docs/roadmap/IMPLEMENTATION_PLAN.
   - Orchestrate evaluation pipeline
   - Exception handling and logging
   - Exit code determination
-- **LOC**: ~150 lines
 
 ### **Policy Validator**
 - **Purpose**: Parse and validate JSON policy files
@@ -90,7 +89,6 @@ See [`docs/roadmap/IMPLEMENTATION_PLAN.md`](../docs/roadmap/IMPLEMENTATION_PLAN.
   - Captures stdout/stderr
   - Parses JSON output
 - **Failures**: Timeout → empty results, osquery crash → logged + continue
-- **LOC**: ~120 lines
 
 ### **Lua Evaluator** (lua_evaluator.cpp)
 - **Purpose**: Execute rule logic in sandboxed Lua runtime
@@ -102,7 +100,6 @@ See [`docs/roadmap/IMPLEMENTATION_PLAN.md`](../docs/roadmap/IMPLEMENTATION_PLAN.
 - **Input**: osquery results (JSON → Lua table)
 - **Output**: Boolean (rule pass/fail)
 - **Failures**: Timeout → rule fails, Lua error → logged + rule fails
-- **LOC**: ~180 lines
 
 ### **Scoring Engine** (scoring.cpp)
 - **Purpose**: Compute weighted score from rule results
@@ -113,7 +110,6 @@ See [`docs/roadmap/IMPLEMENTATION_PLAN.md`](../docs/roadmap/IMPLEMENTATION_PLAN.
   percentage = (score / max_possible) * 100
   ```
 - **Output**: Integer score (0-100)
-- **LOC**: ~60 lines
 
 ### **SQLite Database** (db.cpp)
 - **Purpose**: Durable persistence with crash-safe guarantees
@@ -160,7 +156,6 @@ See [`docs/roadmap/IMPLEMENTATION_PLAN.md`](../docs/roadmap/IMPLEMENTATION_PLAN.
   - `load_pending_reports()` - Crash recovery
   - `mark_delivered()`, `mark_failed()`, `update_retry()` - State transitions
 - **Guarantees**: WAL ensures durability, atomic transactions prevent partial writes
-- **LOC**: ~250 lines (150 Phase 1 + 100 Phase 2)
 
 ### **Report Writer**
 - **Purpose**: Generate JSON report files
@@ -184,7 +179,6 @@ See [`docs/roadmap/IMPLEMENTATION_PLAN.md`](../docs/roadmap/IMPLEMENTATION_PLAN.
   - Canonicalize JSON (sorted keys via nlohmann::json)
   - Returns 64-character hex string
 - **Use Case**: Deduplication at backend (same report = same hash)
-- **LOC**: ~140 lines
 
 ### **DeliveryClient** (delivery_client.cpp) - Phase 2 Foundation ✅
 - **Purpose**: Abstract delivery interface for protocol flexibility
@@ -192,9 +186,8 @@ See [`docs/roadmap/IMPLEMENTATION_PLAN.md`](../docs/roadmap/IMPLEMENTATION_PLAN.
   - `DeliveryClient` abstract base class (pure virtual)
   - `MockDeliveryClient` for testing (configurable success/failure)
 - **Planned**:
-  - `HttpDeliveryClient` for HTTP POST delivery (~80 LOC)
-  - `MqttDeliveryClient` for MQTT QoS 1 publish (~120 LOC)
-- **LOC**: ~75 lines (interface + mock)
+  - `HttpDeliveryClient` for HTTP POST delivery
+  - `MqttDeliveryClient` for MQTT QoS 1 publish
 
 ---
 
@@ -338,16 +331,16 @@ See [`docs/roadmap/IMPLEMENTATION_PLAN.md`](../docs/roadmap/IMPLEMENTATION_PLAN.
 
 **✅ Implemented (Merged to master):**
 - Durable retry queue (SQLite 3-state machine)
-- SHA-256 content hashing (standalone, 140 LOC)
+- SHA-256 content hashing (standalone)
 - DeliveryClient interface + MockDeliveryClient
 - Crash recovery foundation (load_pending_reports)
-- 13 integration tests
+- Integration test suite
 
-**⏳ Remaining (~450 LOC, 3-4 days):**
-- HTTP delivery client (~80 LOC)
-- MQTT delivery client (~120 LOC)
-- RetryQueue manager with exponential backoff (~150 LOC)
-- Main.cpp integration (~100 LOC)
+**⏳ Remaining (3-4 days):**
+- HTTP delivery client
+- MQTT delivery client
+- RetryQueue manager with exponential backoff
+- Main.cpp integration
 - Minimal backend for testing
 
 See [`docs/roadmap/`](../docs/roadmap/) for detailed implementation status.
@@ -358,27 +351,23 @@ See [`docs/roadmap/`](../docs/roadmap/) for detailed implementation status.
 
 **Phase 1 (Evaluation):**
 
-| File | Purpose | LOC |
-|------|---------|-----|
-| `src/main.cpp` | Orchestration, error handling | ~150 |
-| `src/osquery_runner.cpp` | osquery execution with timeout | ~120 |
-| `src/lua_evaluator.cpp` | Sandboxed Lua runtime | ~180 |
-| `src/scoring.cpp` | Weighted score computation | ~60 |
-| `src/db.cpp` | SQLite persistence (WAL) | ~150 |
-| `src/json_to_lua.cpp` | JSON → Lua table conversion | ~80 |
-| **Phase 1 Subtotal** | | **~740 LOC** |
+| File | Purpose |
+|------|---------||
+| `src/main.cpp` | Orchestration, error handling |
+| `src/osquery_runner.cpp` | osquery execution with timeout |
+| `src/lua_evaluator.cpp` | Sandboxed Lua runtime |
+| `src/scoring.cpp` | Weighted score computation |
+| `src/db.cpp` | SQLite persistence (WAL) |
+| `src/json_to_lua.cpp` | JSON → Lua table conversion |
 
 **Phase 2 (Delivery Foundation):**
 
-| File | Purpose | LOC |
-|------|---------|-----|
-| `src/db.cpp` (additions) | retry_queue schema + methods | +100 |
-| `src/report_hasher.cpp` | SHA-256 content hashing | ~140 |
-| `src/delivery_client.cpp` | Interface + MockDeliveryClient | ~75 |
-| `tests/test_delivery_foundation.cpp` | Integration tests (13 assertions) | ~200 |
-| **Phase 2 Subtotal (Implemented)** | | **~515 LOC** |
-
-**Total Implemented:** **~1,255 LOC**
+| File | Purpose |
+|------|---------||
+| `src/db.cpp` (additions) | retry_queue schema + methods |
+| `src/report_hasher.cpp` | SHA-256 content hashing |
+| `src/delivery_client.cpp` | Interface + MockDeliveryClient |
+| `tests/test_delivery_foundation.cpp` | Integration tests |
 
 ---
 

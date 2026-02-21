@@ -1,24 +1,22 @@
 # Code Modules: Delivery Layer
 
-> **Status:** Foundation ✅ Implemented (140 LOC) | Remaining ⏳ Planned (~450 LOC)
+> **Status:** Foundation ✅ Implemented (5 modules) | Remaining ⏳ Planned (4 modules + integration)
 >
 > The delivery foundation is complete and merged. This document tracks what's done and what remains.
 
 ## Implementation Progress
 
-| Module | Status | LOC | Complexity |
-|--------|--------|-----|------------|
-| `report_hasher` | ✅ Implemented | 140 | Low (standalone SHA-256) |
-| `delivery_client` (interface) | ✅ Implemented | 35 | Low (abstract base) |
-| `delivery_client` (mock) | ✅ Implemented | 40 | Low (testing) |
-| `db` (retry_queue schema) | ✅ Implemented | 150 | Low (SQL + 6 methods) |
-| `test_delivery_foundation` | ✅ Implemented | 200 | Low (integration tests) |
-| **Total Implemented** | | **565** | |
-| `http_delivery_client` | ⏳ Planned | 80 | Low (cpp-httplib) |
-| `mqtt_delivery_client` | ⏳ Planned | 120 | Medium (paho-mqtt) |
-| `retry_queue` (manager) | ⏳ Planned | 150 | Low (backoff logic) |
-| `main.cpp` (integration) | ⏳ Planned | 100 | Low (glue code) |
-| **Total Remaining** | | **450** | |
+| Module | Status | Complexity |
+|--------|--------|------------|
+| `report_hasher` | ✅ Implemented | Low (standalone SHA-256) |
+| `delivery_client` (interface) | ✅ Implemented | Low (abstract base) |
+| `delivery_client` (mock) | ✅ Implemented | Low (testing) |
+| `db` (retry_queue schema) | ✅ Implemented | Low (SQL + 6 methods) |
+| `test_delivery_foundation` | ✅ Implemented | Low (integration tests) |
+| `http_delivery_client` | ⏳ Planned | Low (cpp-httplib) |
+| `mqtt_delivery_client` | ⏳ Planned | Medium (paho-mqtt) |
+| `retry_queue` (manager) | ⏳ Planned | Low (backoff logic) |
+| `main.cpp` (integration) | ⏳ Planned | Low (glue code) |
 
 ---
 
@@ -43,8 +41,8 @@ main.cpp (⏳ integration pending)
 **Purpose:** SHA-256 content hashing for report deduplication
 
 **Files:**
-- `src/report_hasher.h` (15 LOC)
-- `src/report_hasher.cpp` (125 LOC)
+- `src/report_hasher.h`
+- `src/report_hasher.cpp`
 
 **Interface:**
 ```cpp
@@ -72,8 +70,8 @@ std::string canonicalize_json(const nlohmann::json& j);
 **Purpose:** Abstract delivery interface for protocol abstraction
 
 **Files:**
-- `src/delivery_client.h` (35 LOC)
-- `src/delivery_client.cpp` (40 LOC)
+- `src/delivery_client.h`
+- `src/delivery_client.cpp`
 
 **Interface:**
 ```cpp
@@ -119,8 +117,8 @@ public:
 **Purpose:** Durable queue persistence with 3-state machine
 
 **Files:**
-- `src/db.h` (modified, +50 LOC)
-- `src/db.cpp` (modified, +100 LOC)
+- `src/db.h` (modified)
+- `src/db.cpp` (modified)
 
 **New Schema:**
 ```sql
@@ -187,8 +185,8 @@ int get_last_run_id();
 **Purpose:** HTTP POST delivery to backend
 
 **Files:**
-- `src/http_delivery_client.h` (~20 LOC)
-- `src/http_delivery_client.cpp` (~60 LOC)
+- `src/http_delivery_client.h`
+- `src/http_delivery_client.cpp`
 
 **Planned Interface:**
 ```cpp
@@ -213,8 +211,6 @@ private:
 - Retry: HTTP 5xx, network errors
 - Terminal: HTTP 400 (malformed request)
 
-**Estimated LOC:** ~80 lines
-
 ---
 
 ## ⏳ Planned: mqtt_delivery_client
@@ -222,8 +218,8 @@ private:
 **Purpose:** MQTT QoS 1 publish to broker
 
 **Files:**
-- `src/mqtt_delivery_client.h` (~25 LOC)
-- `src/mqtt_delivery_client.cpp` (~95 LOC)
+- `src/mqtt_delivery_client.h`
+- `src/mqtt_delivery_client.cpp`
 
 **Planned Interface:**
 ```cpp
@@ -251,8 +247,6 @@ private:
 - Success: PUBACK received
 - Retry: Connection failure, timeout
 
-**Estimated LOC:** ~120 lines
-
 ---
 
 ## ⏳ Planned: retry_queue (Manager)
@@ -260,8 +254,8 @@ private:
 **Purpose:** Orchestrate delivery with exponential backoff
 
 **Files:**
-- `src/retry_queue.h` (~40 LOC)
-- `src/retry_queue.cpp` (~110 LOC)
+- `src/retry_queue.h`
+- `src/retry_queue.cpp`
 
 **Planned Interface:**
 ```cpp
@@ -297,8 +291,6 @@ private:
   - If attempts >= 5: `db.mark_failed(run_id, now, error)`
 - Exponential backoff: 1s → 2s → 4s → 8s → 16s
 - No jitter (single agent, no thundering herd)
-
-**Estimated LOC:** ~150 lines
 
 ---
 
@@ -343,14 +335,12 @@ int main(int argc, char** argv) {
 }
 ```
 
-**Estimated LOC Added:** ~100 lines
-
 ---
 
 ## Testing Strategy
 
 **✅ Implemented Tests:**
-- `test_delivery_foundation.cpp` (200 LOC, 13 assertions)
+- `test_delivery_foundation.cpp`
 - Hash determinism, mock client, queue operations, end-to-end flow
 
 **⏳ Planned Tests:**
@@ -420,8 +410,6 @@ int main(int argc, char** argv) {
 }
 ```
 
-**LOC Added:** ~30 lines
-
 ---
 
 ## Backend: server.py
@@ -458,19 +446,17 @@ def receive_report(report: dict, hash: str):
     return {"status": "accepted"}
 ```
 
-**LOC:** ~50 lines
-
 ---
 
 ## Summary
 
-| Module | New/Modified | LOC | Purpose |
-|--------|--------------|-----|---------|
-| `report_hasher.cpp` | NEW | 80 | SHA-256 hashing |
-| `delivery_client.cpp` | NEW | 150 | HTTP abstraction |
-| `retry_queue.cpp` | NEW | 200 | Queue + backoff |
-| `db.cpp` | MODIFIED | +100 | Retry queue schema |
-| `main.cpp` | MODIFIED | +30 | Integration |
+| Module | New/Modified | Purpose |
+|--------|--------------|---------||
+| `report_hasher.cpp` | NEW | SHA-256 hashing |
+| `delivery_client.cpp` | NEW | HTTP abstraction |
+| `retry_queue.cpp` | NEW | Queue + backoff |
+| `db.cpp` | MODIFIED | Retry queue schema |
+| `main.cpp` | MODIFIED | Integration |
 | `backend/server.py` | NEW | 50 | Idempotent backend |
 | **Total** | | **610** | **Delivery layer** |
 

@@ -138,7 +138,7 @@ Policies define security rules using osquery for data collection and Lua for eva
 - ✅ **Sandboxed Execution**: Lua runtime has no file/network I/O, enforced timeouts
 - ✅ **Resource Bounds**: CPU/memory/disk usage limited by timeouts and output caps
 - ✅ **Offline Operation**: Agent works without network (local evaluation only)
-- ✅ **Content Hashing**: SHA-256 hashing for report deduplication (standalone, 140 LOC)
+- ✅ **Content Hashing**: SHA-256 hashing for report deduplication (standalone implementation)
 - ✅ **Delivery Queue Schema**: Durable retry_queue with 3-state machine
 - ✅ **Idempotent Deduplication**: UNIQUE constraint on report_hash prevents duplicates
 
@@ -282,7 +282,7 @@ graph LR
     K -.planned.-> M[HttpDeliveryClient]
     K -.planned.-> N[MqttDeliveryClient]
     
-    O[report_hasher] --> P[SHA-256<br/>standalone 140 LOC]
+    O[report_hasher] --> P[SHA-256<br/>standalone]
     
     style F fill:#e1f5ff
     style C fill:#fff3e0
@@ -366,7 +366,7 @@ Sentinel/
 
 **Honest Scope Communication:**
 - Clear separation of "implemented" vs "planned"
-- Explicit LOC estimates and time ranges
+- Explicit time estimates for remaining work
 - Realistic complexity assessments
 - No vaporware - working code first, then architectural plans
 
@@ -390,7 +390,7 @@ Sentinel/
 | **[docs/PRE_COMMIT_TESTING.md](docs/PRE_COMMIT_TESTING.md)** | ✅ Current | Comprehensive 15-minute validation |
 | **[scripts/README.md](scripts/README.md)** | ✅ Current | Build/run/test script documentation |
 | **[docs/roadmap/IMPLEMENTATION_PLAN.md](docs/roadmap/IMPLEMENTATION_PLAN.md)** | 📋 Planning | Phased delivery layer implementation |
-| **[docs/roadmap/CODE_MODULES.md](docs/roadmap/CODE_MODULES.md)** | 📋 Planning | Module architecture (~600 LOC remaining) |
+| **[docs/roadmap/CODE_MODULES.md](docs/roadmap/CODE_MODULES.md)** | 📋 Planning | Module architecture and implementation plan |
 | **[docs/roadmap/delivery-state-machine.md](docs/roadmap/delivery-state-machine.md)** | 📋 Planning | Delivery state transitions |
 | **[docs/roadmap/failure-scenarios.md](docs/roadmap/failure-scenarios.md)** | 📋 Planning | Network/crash recovery patterns |
 | **[docs/roadmap/delivery-guarantees.md](docs/roadmap/delivery-guarantees.md)** | 📋 Planning | Formal delivery specifications |
