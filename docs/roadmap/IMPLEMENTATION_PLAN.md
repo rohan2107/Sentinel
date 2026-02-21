@@ -445,7 +445,7 @@ uvicorn server:app --reload --port 8000
 - `src/retry_queue.h` + `src/retry_queue.cpp`
 - `backend/server.py`
 - `backend/requirements.txt`
-- `test_delivery.cpp` (optional)
+- `test_delivery_foundation.cpp` (optional)
 
 ### Modified Files
 

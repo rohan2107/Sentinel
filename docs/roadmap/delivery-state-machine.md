@@ -10,7 +10,7 @@ Explicit 3-state machine ensuring at-least-once delivery with durable persistenc
 
 **✅ Implemented (Foundation layer):**
 - retry_queue table schema with 3-state CHECK constraint
-- Database operations: enqueue, load_pending, mark_delivered, mark_failed, update_retry
+- Database operations: enqueue_report, load_pending_reports, mark_delivered, mark_failed, update_retry
 - SHA-256 content hashing (standalone)
 - DeliveryClient abstract interface + MockDeliveryClient
 - Integration tests covering all state transitions
@@ -18,7 +18,7 @@ Explicit 3-state machine ensuring at-least-once delivery with durable persistenc
 **⏳ Remaining Work:**
 - HTTP/MQTT delivery client implementations
 - Exponential backoff logic in RetryQueue manager
-- Integration into main.cpp (call enqueue after persist_run)
+- Integration into main.cpp (call enqueue_report after persist_run)
 - Crash recovery on startup (call load_pending_reports)
 
 ---

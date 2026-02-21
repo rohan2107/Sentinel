@@ -62,7 +62,7 @@ CREATE TABLE retry_queue (
 - ✅ SHA-256 content hashing (standalone implementation, no OpenSSL)
 - ✅ DeliveryClient interface with abstract base class
 - ✅ MockDeliveryClient for testing
-- ✅ Queue operations: enqueue, load_pending, mark_delivered, mark_failed, update_retry
+- ✅ Queue operations: enqueue_report, load_pending_reports, mark_delivered, mark_failed, update_retry
 - ✅ Integration test suite (all tests passing)
 - ✅ Defensive NULL checks for nullable fields
 - ✅ Dynamic timestamp handling (prevents test decay)

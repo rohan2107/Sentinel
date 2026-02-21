@@ -453,12 +453,12 @@ def receive_report(report: dict, hash: str):
 | Module | New/Modified | Purpose |
 |--------|--------------|---------|
 | `report_hasher.cpp` | NEW | SHA-256 hashing |
-| `delivery_client.cpp` | NEW | HTTP abstraction |
+| `delivery_client.cpp` | NEW | Protocol-agnostic delivery interface |
 | `retry_queue.cpp` | NEW | Queue + backoff |
 | `db.cpp` | MODIFIED | Retry queue schema |
 | `main.cpp` | MODIFIED | Integration |
-| `backend/server.py` | NEW | 50 | Idempotent backend |
-| **Total** | | **610** | **Delivery layer** |
+| `backend/server.py` | NEW | Idempotent backend |
+| **Total** | | **Delivery layer** |
 
 ---
 
@@ -502,7 +502,7 @@ vcpkg install cpp-httplib openssl
 
 ## Testing Modules
 
-### test_delivery.cpp (optional)
+### test_delivery_foundation.cpp (optional)
 
 ```cpp
 #include "report_hasher.h"
