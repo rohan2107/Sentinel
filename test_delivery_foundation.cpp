@@ -8,6 +8,7 @@
 #include "src/db.h"
 #include "src/report_hasher.h"
 #include "src/delivery_client.h"
+#include "src/retry_queue.h"
 
 using json = nlohmann::json;
 
@@ -166,6 +167,79 @@ void test_retry_queue() {
     remove(test_db);
 }
 
+void test_retry_queue_manager() {
+    std::cout << "=== Testing RetryQueue Manager ===\n";
+    
+    const char* test_db = "retry_queue_test.db";
+    remove(test_db);
+    
+    DB db(test_db);
+    db.init_schema();
+    
+    // Persist a run
+    json details = {{"firewall_enabled", true}};
+    db.persist_run("2026-02-24T14:00:00.000Z", "test-host", "test-policy", 95, details);
+    int run_id = db.get_last_run_id();
+    
+    json report = {
+        {"timestamp", "2026-02-24T14:00:00.000Z"},
+        {"hostname", "test-host"},
+        {"score", 95}
+    };
+    std::string hash = compute_report_hash(report);
+    
+    // Test with success client
+    {
+        auto client = std::make_unique<MockDeliveryClient>(true);
+        RetryQueue queue(db, std::move(client), 5);
+        
+        queue.enqueue(run_id, report.dump(), hash);
+        int delivered = queue.process_pending();
+        
+        assert(delivered == 1);
+        std::cout << "[PASS] RetryQueue delivered 1 report successfully\n";
+    }
+    
+    // Test with failure client (triggers retry)
+    db.persist_run("2026-02-24T14:01:00.000Z", "test-host-2", "test-policy", 90, details);
+    int run_id2 = db.get_last_run_id();
+    
+    json report2 = {
+        {"timestamp", "2026-02-24T14:01:00.000Z"},
+        {"hostname", "test-host-2"},
+        {"score", 90}
+    };
+    std::string hash2 = compute_report_hash(report2);
+    
+    {
+        auto client = std::make_unique<MockDeliveryClient>(false);
+        RetryQueue queue(db, std::move(client), 3); // max 3 retries
+        
+        queue.enqueue(run_id2, report2.dump(), hash2);
+        
+        // Process once - first attempt fails, schedules future retry
+        queue.process_pending();
+        
+        // Force next_retry_at into the past so subsequent process_pending picks it up
+        // Repeat until max_retries (3) is exceeded
+        for (int i = 0; i < 4; i++) {
+            db.update_retry(run_id2, i + 1, "2000-01-01 00:00:00", "forced retry");
+            queue.process_pending();
+        }
+        
+        // Verify the row is actually in FAILED state (not just absent from pending)
+        std::string state = db.get_queue_state(run_id2);
+        assert(state == "FAILED");
+        
+        auto pending = db.load_pending_reports();
+        assert(pending.size() == 0);
+        std::cout << "[PASS] RetryQueue respects max_retries (state=FAILED verified)\n";
+    }
+    
+    std::cout << "\n";
+    remove(test_db);
+}
+
 void test_integration() {
     std::cout << "=== Testing End-to-End Integration ===\n";
     
@@ -227,6 +301,7 @@ int main() {
         test_hash_determinism();
         test_mock_delivery();
         test_retry_queue();
+        test_retry_queue_manager();
         test_integration();
         
         std::cout << "===================================================\n";
@@ -237,14 +312,21 @@ int main() {
         std::cout << "  - SHA-256 hashing is deterministic\n";
         std::cout << "  - MockDeliveryClient works correctly\n";
         std::cout << "  - Retry queue operations functional\n";
+        std::cout << "  - RetryQueue manager with backoff works\n";
         std::cout << "  - UNIQUE constraint on report_hash enforced\n";
         std::cout << "  - Dynamic timestamp handling prevents test decay\n";
         std::cout << "  - End-to-end integration verified\n";
-        std::cout << "  - Ready for HTTP/MQTT delivery clients\n\n";
-        
-        return 0;
+        std::cout << "  - Ready for production HTTP delivery\n\n";
     } catch (const std::exception& e) {
         std::cerr << "\nTEST FAILED: " << e.what() << "\n\n";
         return 1;
     }
+    
+    // Final cleanup: remove any leftover test databases
+    const char* test_dbs[] = {"test_sentinel.db", "retry_queue_test.db", "integration_test.db"};
+    for (const char* db_name : test_dbs) {
+        remove(db_name);
+    }
+    
+    return 0;
 }

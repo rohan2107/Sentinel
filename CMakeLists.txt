@@ -12,9 +12,20 @@ endif()
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 find_package(sol2 CONFIG REQUIRED)
+find_package(httplib CONFIG REQUIRED)
 
 # Manual Lua detection for Windows/vcpkg
 set(_vcpkg_root "C:/vcpkg" CACHE PATH "vcpkg root (fallback)")
+if(DEFINED CMAKE_TOOLCHAIN_FILE AND EXISTS "${CMAKE_TOOLCHAIN_FILE}")
+  # Extract vcpkg root from toolchain path for Lua
+  # Toolchain is typically at: <vcpkg_root>/scripts/buildsystems/vcpkg.cmake
+  get_filename_component(_vcpkg_from_toolchain "${CMAKE_TOOLCHAIN_FILE}" DIRECTORY)    # -> scripts/buildsystems
+  get_filename_component(_vcpkg_from_toolchain "${_vcpkg_from_toolchain}" DIRECTORY)    # -> scripts
+  get_filename_component(_vcpkg_from_toolchain "${_vcpkg_from_toolchain}" DIRECTORY)    # -> vcpkg_root
+  if(EXISTS "${_vcpkg_from_toolchain}/installed/x64-windows/include")
+    set(_vcpkg_root "${_vcpkg_from_toolchain}")
+  endif()
+endif()
 find_path(LUA_INCLUDE_DIR lua.h HINTS "${_vcpkg_root}/installed/x64-windows/include" PATH_SUFFIXES lua include)
 find_library(LUA_LIBRARY NAMES lua54 lua5.4 lua HINTS "${_vcpkg_root}/installed/x64-windows/lib")
 if (LUA_INCLUDE_DIR AND LUA_LIBRARY)
@@ -40,6 +51,8 @@ add_executable(Sentinel
   src/db.cpp
   src/report_hasher.cpp
   src/delivery_client.cpp
+  src/http_delivery_client.cpp
+  src/retry_queue.cpp
 )
 
 target_include_directories(Sentinel PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -48,6 +61,7 @@ target_link_libraries(Sentinel PRIVATE
   nlohmann_json::nlohmann_json
   spdlog::spdlog
   sol2::sol2
+  httplib::httplib
   Lua::Lua
   unofficial::sqlite3::sqlite3
 )
@@ -58,11 +72,14 @@ add_executable(test_delivery_foundation
   src/db.cpp
   src/report_hasher.cpp
   src/delivery_client.cpp
+  src/http_delivery_client.cpp
+  src/retry_queue.cpp
 )
 
 target_include_directories(test_delivery_foundation PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_link_libraries(test_delivery_foundation PRIVATE
   nlohmann_json::nlohmann_json
+  httplib::httplib
   unofficial::sqlite3::sqlite3
 )

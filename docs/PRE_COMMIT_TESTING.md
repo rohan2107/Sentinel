@@ -212,7 +212,58 @@ Remove-Item test_readonly.db
 
 ---
 
-### Test 8: CI/CD Pipeline Simulation
+### Test 8: HTTP Delivery to FastAPI Backend
+
+**Prerequisite:** Python 3.8+ with fastapi installed
+
+```powershell
+# 8a: Start FastAPI backend in background
+$backendJob = Start-Job -ScriptBlock {
+    Push-Location "$using:PWD\backend"
+    python -m uvicorn server:app --host 127.0.0.1 --port 8000 --log-level warning
+}
+Start-Sleep -Seconds 2
+
+# 8b: Verify backend is running
+$healthCheck = Invoke-RestMethod -Uri "http://localhost:8000/health" -ErrorAction SilentlyContinue
+if ($healthCheck.status -ne "healthy") {
+    Write-Error "Backend health check failed"
+    Stop-Job $backendJob
+    exit 1
+}
+
+# 8c: Run agent with delivery enabled
+.\build\Debug\Sentinel.exe --enable-delivery --backend-url "http://localhost:8000"
+
+# 8d: Verify delivery (check backend received report)
+$reports = Invoke-RestMethod -Uri "http://localhost:8000/reports" -ErrorAction SilentlyContinue
+
+# 8e: Test idempotency (send same report again)
+.\build\Debug\Sentinel.exe --enable-delivery --backend-url "http://localhost:8000"
+
+# 8f: Cleanup
+Stop-Job $backendJob
+```
+
+**Pass Criteria:**
+- [ ] Backend starts and health check passes
+- [ ] Agent runs with --enable-delivery flag
+- [ ] Report received by backend (reports endpoint shows ≥1 report)
+- [ ] Hash is verified on backend (no 400 errors)
+- [ ] Second delivery is treated as duplicate (idempotent, not duplicated)
+- [ ] All reports have: report_hash, report_json fields populated
+- [ ] No errors in agent output
+- [ ] Exit code 0
+
+**Spot Check (in browser):**
+```
+GET http://localhost:8000/reports
+GET http://localhost:8000/health
+```
+
+---
+
+### Test 9: CI/CD Pipeline Simulation
 
 Simulate GitHub Actions workflow locally.
 
@@ -264,16 +315,23 @@ Before running `git commit`, verify:
 - [ ] Edge cases handled gracefully
 
 ### Files to Commit
-Core implementation:
-- [ ] `src/db.h` (modified - queue operations)
-- [ ] `src/db.cpp` (modified - retry_queue schema)
-- [ ] `src/report_hasher.h` (new - SHA-256 interface)
-- [ ] `src/report_hasher.cpp` (new - SHA-256 implementation)
-- [ ] `src/delivery_client.h` (new - interface + mock)
-- [ ] `src/delivery_client.cpp` (new - mock implementation)
-- [ ] `src/main.cpp` (modified - CLI parsing fix)
-- [ ] `test_delivery_foundation.cpp` (new - integration tests)
-- [ ] `CMakeLists.txt` (modified - new sources/targets)
+Core implementation - Foundation (Phase 1-3):
+- [ ] `src/db.h`, `src/db.cpp` (database + retry_queue schema)
+- [ ] `src/report_hasher.h`, `src/report_hasher.cpp` (SHA-256 hashing)
+- [ ] `src/delivery_client.h`, `src/delivery_client.cpp` (interface + mock)
+
+HTTP Delivery (Phase 4):
+- [ ] `src/http_delivery_client.h`, `src/http_delivery_client.cpp` (HTTP POST client)
+- [ ] `src/retry_queue.h`, `src/retry_queue.cpp` (retry manager + backoff)
+
+Integration:
+- [ ] `src/main.cpp` (modified - CLI flags: --enable-delivery, --backend-url; crash recovery)
+- [ ] `test_delivery_foundation.cpp` (integration tests including RetryQueue manager)
+- [ ] `CMakeLists.txt` (modified - cpp-httplib dependency, new sources)
+
+FastAPI Backend (Phase 7):
+- [ ] `backend/server.py` (FastAPI endpoints, hash verification, deduplication)
+- [ ] `backend/requirements.txt` (fastapi, uvicorn, pydantic deps)
 
 CI/CD and tooling:
 - [ ] `.github/workflows/windows-build.yml` (modified - test step)
