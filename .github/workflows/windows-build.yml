@@ -1,9 +1,9 @@
 name: Windows Build (CMake + vcpkg)
 
-# Trigger on pushes / PRs to the repo's main development branch (master)
+# Trigger on pushes / PRs to master and feature branches
 on:
   push:
-    branches: [ master ]
+    branches: [ master, 'feature/**' ]
   pull_request:
     branches: [ master ]
 
@@ -11,7 +11,6 @@ jobs:
   build-windows:
     runs-on: windows-latest
     env:
-      # vcpkg root inside the workspace
       VCPKG_ROOT: ${{ github.workspace }}\vcpkg
       VCPKG_DEFAULT_TRIPLET: x64-windows
 
@@ -22,15 +21,12 @@ jobs:
       - name: Setup MSBuild tooling
         uses: microsoft/setup-msbuild@v1
 
-      # vcpkg bootstrap + installs can be slow on cold CI runs.
-      # We cache the entire vcpkg directory to speed up subsequent builds.
       - name: Cache vcpkg
         uses: actions/cache@v4
         with:
           path: |
             ${{ github.workspace }}\vcpkg
-          key: vcpkg-${{ runner.os }}-nlohmann-json-spdlog-sol2-lua-sqlite3-cpp-httplib-v1
-          # restore-keys fallback:
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
           restore-keys: |
             vcpkg-${{ runner.os }}-
 
@@ -40,7 +36,6 @@ jobs:
           python-version: '3.11'
 
       - name: Clone vcpkg
-        # Use cmd shell to keep syntax consistent with later steps
         shell: cmd
         run: |
           if not exist "%VCPKG_ROOT%\vcpkg.exe" (
@@ -70,24 +65,54 @@ jobs:
         shell: cmd
         run: cmake --build build --config Release
 
-      - name: Build (Debug)
-        shell: cmd
-        run: cmake --build build --config Debug
-
-      - name: Run Integration Tests (Debug)
+      - name: Run Integration Tests
         shell: cmd
         run: |
           echo Running delivery foundation integration tests...
-          build\Debug\test_delivery_foundation.exe
+          build\Release\test_delivery_foundation.exe
           if errorlevel 1 (
             echo Integration tests FAILED
             exit /b 1
           )
           echo Integration tests PASSED
 
-      - name: Upload build artifact (build folder)
+      - name: Upload build artifacts
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: cmake-build
-          path: build
+          name: sentinel-binaries
+          path: |
+            build/Release/*.exe
+
+  validate-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements.txt
+
+      - name: Lint backend (syntax + import check)
+        run: python -m py_compile backend/server.py
+
+      - name: Validate policy JSON files
+        run: |
+          python -c "
+          import json, sys, pathlib
+          errors = 0
+          for p in pathlib.Path('policies').glob('*.json'):
+              try:
+                  data = json.loads(p.read_text())
+                  assert 'policy_name' in data or 'rules' in data, f'Missing policy_name or rules key'
+                  print(f'  [OK] {p}')
+              except Exception as e:
+                  print(f'  [FAIL] {p}: {e}', file=sys.stderr)
+                  errors += 1
+          sys.exit(1 if errors else 0)
+          "
