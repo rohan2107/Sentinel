@@ -15,6 +15,9 @@
 #include "lua_evaluator.h"
 #include "db.h"
 #include "scoring.h"
+#include "report_hasher.h"
+#include "http_delivery_client.h"
+#include "retry_queue.h"
 
 #ifdef _WIN32
 #  include <Windows.h>
@@ -108,6 +111,8 @@ static std::string get_hostname() {
 struct CliOptions {
     std::string policy_path = "policies/sample_policy.json";
     std::string report_path = "reports/latest_report.json";
+    std::string backend_url = "http://localhost:8000";
+    bool enable_delivery = false;
 };
 
 static CliOptions parse_cli(int argc, char** argv) {
@@ -120,6 +125,10 @@ static CliOptions parse_cli(int argc, char** argv) {
             opts.policy_path = argv[++i];
         } else if (a == "--report-path" && i + 1 < argc) {
             opts.report_path = argv[++i];
+        } else if (a == "--backend-url" && i + 1 < argc) {
+            opts.backend_url = argv[++i];
+        } else if (a == "--enable-delivery") {
+            opts.enable_delivery = true;
         } else if (!a.empty() && a[0] != '-') {
             // Positional argument (not a flag)
             if (positional_arg.empty()) {
@@ -145,6 +154,27 @@ int main(int argc, char** argv) {
 
     spdlog::info("Sentinel starting");
     spdlog::info("Policy: {}", opts.policy_path);
+    
+    // Crash recovery: retry pending deliveries from previous runs
+    if (opts.enable_delivery) {
+        try {
+            DB db("sentinel_data.sqlite3");
+            db.init_schema();
+            
+            auto pending = db.load_pending_reports();
+            if (!pending.empty()) {
+                spdlog::info("Found {} pending report(s) from previous run(s)", pending.size());
+                
+                auto client = std::make_unique<HttpDeliveryClient>(opts.backend_url, 30);
+                RetryQueue queue(db, std::move(client), 10);
+                
+                int delivered = queue.process_pending();
+                spdlog::info("Crash recovery: delivered {}/{} pending reports", delivered, pending.size());
+            }
+        } catch (const std::exception& e) {
+            spdlog::error("Crash recovery failed: {}", e.what());
+        }
+    }
 
     // Load policy JSON
     json policy;
@@ -197,7 +227,6 @@ int main(int argc, char** argv) {
             } catch (const std::exception& e) {
                 spdlog::error("osquery error for rule {}: {}", id, e.what());
                 outcomes[id] = false;
-                std::cout << id << ": FAIL" << std::endl;
                 continue; // move to next rule
             }
 
@@ -205,7 +234,6 @@ int main(int argc, char** argv) {
             outcomes[id] = pass;
 
             spdlog::info("{} -> {}", id, (pass ? "PASS" : "FAIL"));
-            std::cout << id << ": " << (pass ? "PASS" : "FAIL") << std::endl;
         } catch (const std::exception& e) {
             spdlog::error("Exception while evaluating a rule: {}", e.what());
         } catch (...) {
@@ -248,6 +276,7 @@ int main(int argc, char** argv) {
     }
 
     // Persist to SQLite DB (best-effort)
+    int run_id = -1;
     try {
         DB db("sentinel_data.sqlite3");
         db.init_schema();
@@ -263,7 +292,39 @@ int main(int argc, char** argv) {
                        report.value("score", 0),
                        details_flat);
 
-        spdlog::info("Persisted run to sentinel_data.sqlite3");
+        run_id = db.get_last_run_id();
+        spdlog::info("Persisted run to sentinel_data.sqlite3 (run_id={})", run_id);
+        
+        // Delivery layer integration (if enabled)
+        if (opts.enable_delivery && run_id > 0) {
+            try {
+                // Compute report hash
+                std::string report_hash = compute_report_hash(report);
+                spdlog::info("Report hash: {}...", report_hash.substr(0, 16));
+                
+                // Create HTTP delivery client
+                auto client = std::make_unique<HttpDeliveryClient>(opts.backend_url, 30);
+                
+                // Create retry queue manager
+                RetryQueue queue(db, std::move(client), 10);
+                
+                // Enqueue report for delivery
+                queue.enqueue(run_id, report.dump(), report_hash);
+                spdlog::info("Enqueued report for delivery");
+                
+                // Attempt immediate delivery
+                int delivered = queue.process_pending();
+                if (delivered > 0) {
+                    spdlog::info("Successfully delivered {} report(s)", delivered);
+                } else {
+                    spdlog::warn("Delivery deferred, will retry with backoff");
+                }
+                
+            } catch (const std::exception& e) {
+                spdlog::error("Delivery failed: {}", e.what());
+            }
+        }
+        
     } catch (const std::exception& e) {
         spdlog::error("Failed to persist run to DB: {}", e.what());
     }

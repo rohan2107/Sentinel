@@ -1,7 +1,28 @@
+# Build and compilation artifacts
 /build/ 
 *.exe 
 *.pdb 
-*.sqlite3 
-/reports/ 
+*.ilk
+*.o
+*.obj
+
+# IDEs
 .vscode/ 
+.vs/
+*.user
+*.vcxproj.user
+
+# Databases and runtime files
+*.sqlite3 
 *.db
+/reports/ 
+
+# macOS
+.DS_Store
+
+# Temporary files
+*.bak
+*.tmp
+*.swp
+*~
+

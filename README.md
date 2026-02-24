@@ -55,30 +55,41 @@ CREATE TABLE retry_queue (
 );
 ```
 
-### Phase 2: Delivery Layer 🔄 **PARTIAL**
+### Phase 2: Delivery Layer ✅ **COMPLETE**
 
-**Delivery Foundation** ✅ **IMPLEMENTED** (Merged to master)
+**HTTP Delivery Implementation** ✅ **PRODUCTION-READY**
 - ✅ Retry queue database schema (3-state: PENDING/DELIVERED/FAILED)
 - ✅ SHA-256 content hashing (standalone implementation, no OpenSSL)
 - ✅ DeliveryClient interface with abstract base class
 - ✅ MockDeliveryClient for testing
+- ✅ HttpDeliveryClient with cpp-httplib (header-only)
+- ✅ RetryQueue manager with exponential backoff (1s → 300s)
 - ✅ Queue operations: enqueue_report, load_pending_reports, mark_delivered, mark_failed, update_retry
+- ✅ Crash recovery on startup (retries pending reports)
+- ✅ main.cpp integration (`--enable-delivery` flag)
+- ✅ FastAPI backend with hash deduplication
 - ✅ Integration test suite (all tests passing)
 - ✅ Defensive NULL checks for nullable fields
 - ✅ Dynamic timestamp handling (prevents test decay)
 - ✅ UNIQUE constraint enforcement on report_hash
+- ✅ Idempotent delivery (409 = duplicate = success)
 
-**Remaining Work** (See [`docs/roadmap/`](docs/roadmap/) for implementation plans):
+**Future Enhancement:**
 
 | Feature | Complexity | Estimate | Status |
 |---------|-----------|----------|--------|
-| HTTP Delivery Client | Low | 4-5 hours | Planned |
 | MQTT Delivery Client (QoS 1) | Medium | 6-8 hours | Planned |
-| RetryQueue Manager + Exponential Backoff | Low | 6-7 hours | Planned |
-| main.cpp Integration | Low | 4-5 hours | Planned |
-| FastAPI Backend (hash deduplication) | Low | 4-5 hours | Planned |
 
-**Total Remaining:** ~25-30 hours (3-4 days focused work)
+**Delivery Usage:**
+```bash
+# Start backend
+cd backend
+pip install -r requirements.txt
+uvicorn server:app --reload --port 8000
+
+# Run agent with delivery enabled
+.\Sentinel.exe --enable-delivery --backend-url http://localhost:8000
+```
 
 ---
 

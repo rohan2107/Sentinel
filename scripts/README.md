@@ -32,6 +32,29 @@ Sentinel provides both Command Prompt (.bat) and PowerShell 7 (.ps1) build scrip
 .\scripts\smoketest.ps1
 ```
 
+**Pre-Commit Checklist (Comprehensive Validation):**
+```powershell
+.\scripts\pre-commit-checklist.ps1
+```
+*Runs all validation checks before committing:*
+- ✅ Build validation (Debug config)
+- ✅ Automated test suite (all integration tests)
+- ✅ Backward compatibility (Phase 1 functionality)
+- ✅ CLI argument handling (all variations)
+- ✅ HTTP delivery to FastAPI backend (if available)
+- ✅ Code quality checks (debug patterns)
+- ✅ Documentation verification
+- ✅ Git status review
+
+**Options:**
+```powershell
+# Skip backend testing (if Python not available)
+.\scripts\pre-commit-checklist.ps1 -SkipBackendTest
+
+# Quick validation only (no backend test)
+.\scripts\pre-commit-checklist.ps1 -Quick
+```
+
 ### Execution Policy
 
 If you get an execution policy error, run:
@@ -74,6 +97,12 @@ scripts\test.bat Debug
 ```cmd
 scripts\smoketest.bat
 ```
+
+**Pre-Commit Checklist:**
+```cmd
+scripts\pre-commit-checklist.bat
+```
+*Runs all validation checks before committing (see PowerShell section for details)*
 
 ## Troubleshooting
 

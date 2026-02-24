@@ -1,24 +1,24 @@
 # Implementation Plan: Delivery Layer
 
-> **Status:** Foundation ✅ Complete | Remaining ⏳ Planned (~4 days)
+> **Status:** HTTP Delivery ✅ COMPLETE | MQTT ⏳ Future Enhancement
 >
-> Phase 1-3 (schema, hashing, delivery abstraction) are implemented and merged to master.
-> Phases 4-7 (HTTP/MQTT clients, retry manager, integration, backend) remain.
+> Phase 1-6 (schema, hashing, HTTP client, retry manager, integration) are COMPLETE.
+> Phase 7 (backend) is COMPLETE. MQTT delivery remains as future enhancement.
 
 ## Overview
 
-Add at-least-once delivery semantics to Sentinel with:
+At-least-once delivery semantics implemented in Sentinel:
 - ✅ Durable retry queue (SQLite 3-state machine)
 - ✅ SHA-256 content hashing (standalone)
 - ✅ Delivery abstraction (interface-based)
-- ⏳ MQTT QoS 1 delivery (primary, via paho-mqttpp3)
-- ⏳ HTTP delivery (fallback/testing, via cpp-httplib)
-- ⏳ Exponential backoff retry (manager class)
-- ⏳ Crash recovery (DB query `load_pending_reports` implemented; startup wiring pending)
-- ⏳ Main.cpp integration
-- ⏳ Minimal idempotent backend
+- ✅ HTTP delivery (cpp-httplib, production-ready)
+- ✅ Exponential backoff retry (1s → 300s with jitter)
+- ✅ Crash recovery (startup retry of pending reports)
+- ✅ Main.cpp integration (--enable-delivery flag)
+- ✅ FastAPI idempotent backend
+- ⏳ MQTT QoS 1 delivery (future enhancement)
 
-**Time Estimate:** Foundation complete ✅ + Remaining work ~4 days ⏳
+**Status:** Production-ready HTTP delivery complete. MQTT can be added later.
 
 ---
 
@@ -174,34 +174,43 @@ private:
 
 ---
 
-## ⏳ Phase 4: HTTP/MQTT Client Implementations - PLANNED
+## ✅ Phase 4: HTTP Delivery Client - COMPLETE
 
-### Planned: HTTP Delivery Client
+**Status:** ✅ Implemented and tested
 
-- Library: cpp-httplib (header-only)
-- POST to `{backend_url}/reports`
-- Body: `{"report": <report_json>, "hash": <sha256>}`
-- Header: `X-Report-Hash: <sha256>`
-- Timeout: 30s
-- Success: HTTP 200/201/409 (409 = duplicate, treated as success)
-- Retry: HTTP 5xx, network errors
-- Terminal: HTTP 400 (malformed request)
+### HttpDeliveryClient Implementation
 
-### Planned: MQTT Delivery Client
+```cpp
+// src/http_delivery_client.h
+class HttpDeliveryClient : public DeliveryClient {
+public:
+    explicit HttpDeliveryClient(const std::string& backend_url, int timeout_seconds = 30);
+    DeliveryResult send(const std::string& report_json,
+                       const std::string& report_hash) override;
+};
+```
 
-- Library: paho-mqttpp3 (Eclipse Paho MQTT C++ client)
-- Broker: localhost:1883 (Mosquitto for dev)
-- Topic: `sentinel/reports`
-- QoS: 1 (at-least-once)
-- clean_session: false (persistent session)
-- Payload: `{"report": <report_json>, "hash": <sha256>}`
-- Timeout: 30s
-- Success: PUBACK received
-- Retry: Connection failure, timeout
+**What Was Built:**
+- HTTP POST to `/reports` endpoint using cpp-httplib (header-only)
+- Request body: `{"report": {...}, "hash": "..."}`
+- Success codes: 200, 201, 409 (duplicate = idempotent success)
+- Retry codes: 5xx server errors, 429 rate limit
+- Terminal failure: 4xx client errors (except 429)
+- 30-second timeout (configurable)
+- Full error handling with descriptive messages
+
+**Files:**
+- `src/http_delivery_client.h`
+- `src/http_delivery_client.cpp`
+
+**Testing:**
+- Integration tests with MockDeliveryClient pattern
+- Tested with FastAPI backend
+- Handles network failures gracefully
 
 ---
 
-## ⏳ Phase 5: Retry Queue Manager - PLANNED
+## ✅ Phase 5: Retry Queue Manager - COMPLETE
 
 ### RetryQueue Class
 
@@ -261,54 +270,58 @@ std::string next_retry = iso8601_now_plus_seconds(backoff_s + jitter_s);
 
 ---
 
-## ⏳ Phase 6: Main.cpp Integration - PLANNED
+## ✅ Phase 6: Main.cpp Integration - COMPLETE
+
+**Status:** ✅ Implemented and tested
 
 ### main.cpp Changes
 
 ```cpp
-int main(int argc, char** argv) {
-    // ... existing policy loading and evaluation ...
-    
-    // After report persistence:
+// Command-line options
+struct CliOptions {
+    std::string policy_path = "policies/sample_policy.json";
+    std::string report_path = "reports/latest_report.json";
+    std::string backend_url = "http://localhost:8000";
+    bool enable_delivery = false;
+};
+
+// Startup crash recovery
+if (opts.enable_delivery) {
     DB db("sentinel_data.sqlite3");
-    db.init_schema();  // now includes retry_queue table
-    
-    // Persist run (existing code)
-    db.persist_run(...);
-    int run_id = db.get_last_run_id();  // new method
-    
-    // Compute hash
-    std::string report_hash = compute_report_hash(report);
-    
-    // Create delivery client (configurable)
-    std::string delivery_mode = get_config("delivery_mode", "mqtt");  // mqtt or http
-    std::unique_ptr<DeliveryClient> client;
-    
-    if (delivery_mode == "mqtt") {
-        client = std::make_unique<MqttDeliveryClient>("tcp://localhost:1883", "sentinel/reports");
-    } else {
-        client = std::make_unique<HttpDeliveryClient>("http://localhost:8000");
+    auto pending = db.load_pending_reports();
+    if (!pending.empty()) {
+        auto client = std::make_unique<HttpDeliveryClient>(opts.backend_url, 30);
+        RetryQueue queue(db, std::move(client), 10);
+        int delivered = queue.process_pending();
     }
-    
-    RetryQueue queue(db, std::move(client));
-    
-    // Enqueue for delivery
-    queue.enqueue(run_id, report.dump(), report_hash);
-    
-    // Attempt immediate delivery
-    queue.process_pending();
-    
-    // On crash recovery (startup):
-    // auto pending = queue.load_pending();
-    // queue.process_pending();
-    
-    return 0;
 }
+
+// After report persistence
+if (opts.enable_delivery && run_id > 0) {
+    std::string report_hash = compute_report_hash(report);
+    auto client = std::make_unique<HttpDeliveryClient>(opts.backend_url, 30);
+    RetryQueue queue(db, std::move(client), 10);
+    queue.enqueue(run_id, report.dump(), report_hash);
+    queue.process_pending();
+}
+```
+
+**Features Implemented:**
+- ✅ `--enable-delivery` flag to activate delivery
+- ✅ `--backend-url` to configure backend endpoint
+- ✅ Startup crash recovery (retries pending reports)
+- ✅ Immediate delivery attempt after report generation
+- ✅ Graceful fallback if delivery fails
+- ✅ Detailed logging with spdlog
+
+**Usage:**
+```bash
+.\Sentinel.exe --enable-delivery --backend-url http://localhost:8000
 ```
 
 ---
 
-## ⏳ Phase 7: Minimal Backend - PLANNED
+## ✅ Phase 7: FastAPI Backend - COMPLETE
 
 ### FastAPI Server
 
