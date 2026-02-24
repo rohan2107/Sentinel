@@ -1,12 +1,12 @@
 # backend/server.py
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import sqlite3
 import hashlib
 import json
-from datetime import datetime
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Any
 
 app = FastAPI(title="Sentinel Backend", version="1.0.0")
 
@@ -36,11 +36,11 @@ def init_db():
 init_db()
 
 class ReportSubmission(BaseModel):
-    report: dict
+    report: dict[str, Any]
     hash: str
 
 @app.post("/reports")
-async def receive_report(submission: ReportSubmission):
+async def receive_report(submission: ReportSubmission) -> JSONResponse | dict[str, Any]:
     """
     Receive and store a compliance report.
     Returns 200 for new reports, 409 for duplicates.
@@ -83,7 +83,7 @@ async def receive_report(submission: ReportSubmission):
             """, (
                 submission.hash,
                 json.dumps(submission.report),
-                datetime.utcnow().isoformat() + 'Z',
+                datetime.now(timezone.utc).isoformat(),
                 submission.report.get('hostname', 'unknown'),
                 submission.report.get('policy', 'unknown'),
                 submission.report.get('score', 0)
@@ -115,7 +115,7 @@ async def receive_report(submission: ReportSubmission):
             conn.close()
 
 @app.get("/reports/{report_hash}")
-async def get_report(report_hash: str):
+async def get_report(report_hash: str) -> dict[str, Any]:
     """Retrieve a report by its hash"""
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
@@ -144,7 +144,7 @@ async def get_report(report_hash: str):
     }
 
 @app.get("/reports")
-async def list_reports(limit: int = 50, offset: int = 0):
+async def list_reports(limit: int = 50, offset: int = 0) -> dict[str, Any]:
     """List all received reports (paginated)"""
     # Validate input parameters
     if limit < 1 or limit > 1000:
@@ -165,11 +165,11 @@ async def list_reports(limit: int = 50, offset: int = 0):
     rows = cursor.fetchall()
     
     cursor.execute("SELECT COUNT(*) FROM received_reports")
-    total = cursor.fetchone()[0]
+    total: int = cursor.fetchone()[0]
     
     conn.close()
     
-    reports = []
+    reports: list[dict[str, Any]] = []
     for row in rows:
         reports.append({
             "hash": row[0],
@@ -187,12 +187,12 @@ async def list_reports(limit: int = 50, offset: int = 0):
     }
 
 @app.get("/health")
-async def health_check():
+async def health_check() -> dict[str, str]:
     """Health check endpoint"""
     return {"status": "healthy", "service": "sentinel-backend"}
 
 @app.get("/")
-async def root():
+async def root() -> dict[str, Any]:
     """Root endpoint with API information"""
     return {
         "service": "Sentinel Backend",
