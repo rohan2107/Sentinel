@@ -71,7 +71,8 @@ std::string RetryQueue::compute_next_retry(int attempts) {
 #endif
     
     std::ostringstream oss;
-    oss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
+    oss << std::put_time(&tm, "%Y-%m-%dT%H:%M:%S");
+    oss << ".000Z";
     return oss.str();
 }
 

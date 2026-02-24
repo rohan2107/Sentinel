@@ -1,5 +1,6 @@
 # backend/server.py
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import sqlite3
 import hashlib
@@ -56,55 +57,62 @@ async def receive_report(submission: ReportSubmission):
         )
     
     # Check for duplicate
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT report_hash FROM received_reports WHERE report_hash = ?", (submission.hash,))
-    existing = cursor.fetchone()
-    
-    if existing:
-        conn.close()
-        return {
-            "status": "duplicate",
-            "message": "Report already received (idempotent)",
-            "hash": submission.hash
-        }
-    
-    # Store report
+    conn = None
     try:
-        cursor.execute("""
-            INSERT INTO received_reports (report_hash, report_json, received_at, hostname, policy, score)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            submission.hash,
-            json.dumps(submission.report),
-            datetime.utcnow().isoformat() + 'Z',
-            submission.report.get('hostname', 'unknown'),
-            submission.report.get('policy', 'unknown'),
-            submission.report.get('score', 0)
-        ))
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
         
-        conn.commit()
-        conn.close()
+        cursor.execute("SELECT report_hash FROM received_reports WHERE report_hash = ?", (submission.hash,))
+        existing = cursor.fetchone()
         
-        return {
-            "status": "accepted",
-            "message": "Report stored successfully",
-            "hash": submission.hash,
-            "score": submission.report.get('score', 0)
-        }
+        if existing:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "status": "duplicate",
+                    "message": "Report already received (idempotent)",
+                    "hash": submission.hash
+                }
+            )
         
-    except sqlite3.IntegrityError as e:
-        conn.close()
-        # Race condition: another request inserted the same hash
-        return {
-            "status": "duplicate",
-            "message": "Report already received (race condition)",
-            "hash": submission.hash
-        }
-    except Exception as e:
-        conn.close()
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+        # Store report
+        try:
+            cursor.execute("""
+                INSERT INTO received_reports (report_hash, report_json, received_at, hostname, policy, score)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                submission.hash,
+                json.dumps(submission.report),
+                datetime.utcnow().isoformat() + 'Z',
+                submission.report.get('hostname', 'unknown'),
+                submission.report.get('policy', 'unknown'),
+                submission.report.get('score', 0)
+            ))
+            
+            conn.commit()
+            
+            return {
+                "status": "accepted",
+                "message": "Report stored successfully",
+                "hash": submission.hash,
+                "score": submission.report.get('score', 0)
+            }
+            
+        except sqlite3.IntegrityError as e:
+            # Race condition: another request inserted the same hash
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "status": "duplicate",
+                    "message": "Report already received (race condition)",
+                    "hash": submission.hash
+                }
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
 
 @app.get("/reports/{report_hash}")
 async def get_report(report_hash: str):
@@ -138,6 +146,12 @@ async def get_report(report_hash: str):
 @app.get("/reports")
 async def list_reports(limit: int = 50, offset: int = 0):
     """List all received reports (paginated)"""
+    # Validate input parameters
+    if limit < 1 or limit > 1000:
+        raise HTTPException(status_code=400, detail="Limit must be between 1 and 1000")
+    if offset < 0:
+        raise HTTPException(status_code=400, detail="Offset must be non-negative")
+    
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
