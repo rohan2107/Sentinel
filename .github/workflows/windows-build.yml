@@ -3,7 +3,7 @@ name: Windows Build (CMake + vcpkg)
 # Trigger on pushes / PRs to master and feature branches
 on:
   push:
-    branches: [ master, 'feature/**' ]
+    branches: [ master ]
   pull_request:
     branches: [ master ]
 
