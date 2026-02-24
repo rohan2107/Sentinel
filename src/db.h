@@ -51,6 +51,9 @@ struct DB {
     // increment retry attempt and set next_retry_at
     void update_retry(int run_id, int attempts, const std::string& next_retry_at, const std::string& error);
 
+    // query a queue entry's current state (for testing/diagnostics)
+    std::string get_queue_state(int run_id);
+
 private:
     struct Impl;
     Impl* p;

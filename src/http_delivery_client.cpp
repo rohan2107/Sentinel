@@ -46,7 +46,10 @@ DeliveryResult HttpDeliveryClient::send(const std::string& report_json,
         }
         
         if (scheme == "https") {
-            port = (port == 80) ? 443 : port;
+            // cpp-httplib requires CPPHTTPLIB_OPENSSL_SUPPORT for HTTPS.
+            // Reject https:// URLs until TLS support is added.
+            result.error_message = "HTTPS not supported: use http:// or terminate TLS at a reverse proxy";
+            return result;
         }
         
         // Create HTTP client

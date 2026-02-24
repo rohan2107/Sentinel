@@ -87,8 +87,8 @@ cd backend
 pip install -r requirements.txt
 uvicorn server:app --reload --port 8000
 
-# Run agent with delivery enabled
-.\Sentinel.exe --enable-delivery --backend-url http://localhost:8000
+# Run agent with delivery enabled (HTTP-only; for TLS, terminate at a reverse proxy)
+.\build\Release\Sentinel.exe --enable-delivery --backend-url http://localhost:8000
 ```
 
 ---

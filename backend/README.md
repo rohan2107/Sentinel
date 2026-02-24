@@ -71,7 +71,7 @@ Health check endpoint.
 uvicorn server:app --port 8000
 
 # Submit a report (from agent)
-.\scripts\run.ps1 --enable-delivery --backend-url http://localhost:8000
+.\build\Release\Sentinel.exe --enable-delivery --backend-url http://localhost:8000
 
 # List reports
 curl http://localhost:8000/reports

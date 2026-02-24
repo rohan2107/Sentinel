@@ -217,15 +217,23 @@ void test_retry_queue_manager() {
         
         queue.enqueue(run_id2, report2.dump(), hash2);
         
-        // Process multiple times (should eventually fail)
-        for (int i = 0; i < 5; i++) {
+        // Process once - first attempt fails, schedules future retry
+        queue.process_pending();
+        
+        // Force next_retry_at into the past so subsequent process_pending picks it up
+        // Repeat until max_retries (3) is exceeded
+        for (int i = 0; i < 4; i++) {
+            db.update_retry(run_id2, i + 1, "2000-01-01 00:00:00", "forced retry");
             queue.process_pending();
         }
         
-        // Should be marked as FAILED after max retries
+        // Verify the row is actually in FAILED state (not just absent from pending)
+        std::string state = db.get_queue_state(run_id2);
+        assert(state == "FAILED");
+        
         auto pending = db.load_pending_reports();
-        assert(pending.size() == 0); // No longer pending (either delivered or failed)
-        std::cout << "[PASS] RetryQueue respects max_retries\n";
+        assert(pending.size() == 0);
+        std::cout << "[PASS] RetryQueue respects max_retries (state=FAILED verified)\n";
     }
     
     std::cout << "\n";

@@ -82,7 +82,7 @@ if ($warnings_found -eq 0) {
 Write-Section "2. AUTOMATED TEST SUITE"
 
 Write-Check "Cleaning up test database files from previous runs..."
-@("test_sentinel.db", "test_retry_queue.db", "test_delivery_foundation.db") | 
+@("test_sentinel.db", "retry_queue_test.db", "integration_test.db") | 
     ForEach-Object { 
         if (Test-Path $_) { 
             Remove-Item $_ -Force -ErrorAction SilentlyContinue
@@ -115,7 +115,7 @@ $testsPassed = $testOutput | Select-String -Pattern "\[PASS\]" | Measure-Object 
 Write-Host "  Test suites passed: $testsPassed" -ForegroundColor Green
 
 # Verify no test database files left behind AFTER tests
-$testDbs = @("test_sentinel.db", "test_retry_queue.db", "test_delivery_foundation.db")
+$testDbs = @("test_sentinel.db", "retry_queue_test.db", "integration_test.db")
 $leftoverDbs = $testDbs | Where-Object { Test-Path $_ }
 if ($leftoverDbs.Count -eq 0) {
     Write-Pass "No test database files left behind"

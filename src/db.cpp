@@ -302,3 +302,20 @@ void DB::update_retry(int run_id, int attempts, const std::string& next_retry_at
     }
     sqlite3_finalize(stmt);
 }
+
+std::string DB::get_queue_state(int run_id) {
+    const char* sql = "SELECT state FROM retry_queue WHERE run_id = ?;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(p->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        throw std::runtime_error("sqlite prepare get_queue_state");
+    }
+    sqlite3_bind_int(stmt, 1, run_id);
+
+    std::string state;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char* ptr = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+        state = ptr ? ptr : "";
+    }
+    sqlite3_finalize(stmt);
+    return state;
+}

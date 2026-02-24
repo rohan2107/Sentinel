@@ -219,14 +219,14 @@ Remove-Item test_readonly.db
 ```powershell
 # 8a: Start FastAPI backend in background
 $backendJob = Start-Job -ScriptBlock {
-    Push-Location "C:\Users\rohta\source\repos\Sentinel\backend"
+    Push-Location "$using:PWD\backend"
     python -m uvicorn server:app --host 127.0.0.1 --port 8000 --log-level warning
 }
 Start-Sleep -Seconds 2
 
 # 8b: Verify backend is running
 $healthCheck = Invoke-RestMethod -Uri "http://localhost:8000/health" -ErrorAction SilentlyContinue
-if ($healthCheck.status -ne "ok") {
+if ($healthCheck.status -ne "healthy") {
     Write-Error "Backend health check failed"
     Stop-Job $backendJob
     exit 1

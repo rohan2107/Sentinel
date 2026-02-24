@@ -49,7 +49,9 @@ std::string RetryQueue::iso8601_now() {
 
 std::string RetryQueue::compute_next_retry(int attempts) {
     // Exponential backoff: 1s, 2s, 4s, 8s, ... cap at 300s (5 minutes)
-    int backoff_s = (std::min)(300, 1 << attempts);
+    // Clamp shift exponent to avoid undefined behavior on signed overflow
+    int clamped = (std::max)(0, (std::min)(attempts, 8)); // 1<<8 = 256 < 300
+    int backoff_s = (std::min)(300, 1 << clamped);
     
     // Add jitter: ±25%
     int jitter_range = backoff_s / 4;
@@ -67,12 +69,13 @@ std::string RetryQueue::compute_next_retry(int attempts) {
 #ifdef _WIN32
     gmtime_s(&tm, &future_time_t);
 #else
-    gmtime_r(&tm, &future_time_t);
+    gmtime_r(&future_time_t, &tm);
 #endif
     
+    // Format as SQLite-compatible datetime: "YYYY-MM-DD HH:MM:SS"
+    // Must match format returned by SQLite datetime('now') for comparison
     std::ostringstream oss;
-    oss << std::put_time(&tm, "%Y-%m-%dT%H:%M:%S");
-    oss << ".000Z";
+    oss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
     return oss.str();
 }
 

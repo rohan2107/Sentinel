@@ -180,7 +180,7 @@ Backend (FastAPI)
 - **Monitoring**: Add logging/metrics around delivery success rate
 - **MQTT Support**: Add `MqttDeliveryClient` for message broker delivery
 - **Authentication**: Add API key/token to backend requests
-- **TLS**: Use `https://` URLs for encrypted transport
+- **TLS**: Current `HttpDeliveryClient` is HTTP-only; use `http://` URLs and, if needed, terminate TLS at a reverse proxy. Native HTTPS support will be added in a future update.
 
 ## Files Changed
 
@@ -191,4 +191,4 @@ Backend (FastAPI)
 - `CMakeLists.txt` - Added cpp-httplib dependency
 - `test_delivery_foundation.cpp` - Integration tests
 
-See [`docs/roadmap/IMPLEMENTATION_PLAN.md`](docs/roadmap/IMPLEMENTATION_PLAN.md) for detailed implementation notes.
+See [`docs/roadmap/IMPLEMENTATION_PLAN.md`](roadmap/IMPLEMENTATION_PLAN.md) for detailed implementation notes.
