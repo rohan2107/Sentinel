@@ -58,7 +58,7 @@ jobs:
         shell: cmd
         run: |
           set "VCPKG=%VCPKG_ROOT%\vcpkg.exe"
-          "%VCPKG%" install nlohmann-json spdlog sol2 lua sqlite3 cpp-httplib --triplet x64-windows
+          "%VCPKG%" install --triplet x64-windows
 
       - name: Configure (CMake)
         shell: cmd
