@@ -1,0 +1,12 @@
+{
+  "name": "sentinel",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "nlohmann-json",
+    "spdlog",
+    "sol2",
+    "lua",
+    "unofficial-sqlite3",
+    "cpp-httplib"
+  ]
+}

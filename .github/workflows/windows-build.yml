@@ -29,7 +29,7 @@ jobs:
         with:
           path: |
             ${{ github.workspace }}\vcpkg
-          key: vcpkg-${{ runner.os }}-nlohmann-json-spdlog-sol2-lua-sqlite3-v1
+          key: vcpkg-${{ runner.os }}-nlohmann-json-spdlog-sol2-lua-sqlite3-cpp-httplib-v1
           # restore-keys fallback:
           restore-keys: |
             vcpkg-${{ runner.os }}-
@@ -58,7 +58,7 @@ jobs:
         shell: cmd
         run: |
           set "VCPKG=%VCPKG_ROOT%\vcpkg.exe"
-          "%VCPKG%" install nlohmann-json spdlog sol2 lua sqlite3 --triplet x64-windows
+          "%VCPKG%" install nlohmann-json spdlog sol2 lua sqlite3 cpp-httplib --triplet x64-windows
 
       - name: Configure (CMake)
         shell: cmd
