@@ -13,8 +13,25 @@ find_package(nlohmann_json CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 find_package(sol2 CONFIG REQUIRED)
 
-# cpp-httplib is header-only, manually add include path from vcpkg
-set(_vcpkg_httplib_path "C:/vcpkg/installed/x64-windows/include")
+# Manual vcpkg root detection (works locally and in CI)
+# Tries multiple common locations
+set(_vcpkg_root "C:/vcpkg" CACHE PATH "vcpkg root (fallback)")
+if(DEFINED CMAKE_TOOLCHAIN_FILE AND EXISTS "${CMAKE_TOOLCHAIN_FILE}")
+  # Extract vcpkg root from toolchain path
+  # Toolchain is typically at: <vcpkg_root>/scripts/buildsystems/vcpkg.cmake
+  get_filename_component(_vcpkg_from_toolchain "${CMAKE_TOOLCHAIN_FILE}" DIRECTORY)    # -> scripts/buildsystems
+  get_filename_component(_vcpkg_from_toolchain "${_vcpkg_from_toolchain}" DIRECTORY)    # -> scripts
+  get_filename_component(_vcpkg_from_toolchain "${_vcpkg_from_toolchain}" DIRECTORY)    # -> vcpkg_root
+  if(EXISTS "${_vcpkg_from_toolchain}/installed/x64-windows/include")
+    set(_vcpkg_root "${_vcpkg_from_toolchain}")
+  endif()
+endif()
+
+# cpp-httplib is header-only, add include path from vcpkg
+set(_vcpkg_httplib_path "${_vcpkg_root}/installed/x64-windows/include")
+if(NOT EXISTS "${_vcpkg_httplib_path}")
+  message(FATAL_ERROR "Could not find vcpkg httplib include path. Tried: ${_vcpkg_httplib_path}")
+endif()
 
 # Manual Lua detection for Windows/vcpkg
 set(_vcpkg_root "C:/vcpkg" CACHE PATH "vcpkg root (fallback)")
