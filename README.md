@@ -4,7 +4,7 @@
 
 **Sentinel is a security compliance evaluation agent demonstrating deterministic policy evaluation, durable persistence, and clean architectural patterns.**
 
-This project showcases engineering thinking for agent-based systems: crash-safe persistence (SQLite WAL), sandboxed rule execution (Lua), and separation of concerns. It's structured as a two-phase implementation to demonstrate both working code (Phase 1) and architectural planning (Phase 2 includes explicit state machines for delivery).
+This project showcases engineering thinking for agent-based systems: crash-safe persistence (SQLite WAL), sandboxed rule execution (Lua), at-least-once HTTP delivery with exponential backoff, and separation of concerns. Phase 1 handles local evaluation; Phase 2 adds durable delivery with SHA-256 content-addressable deduplication.
 
 ---
 
@@ -152,13 +152,15 @@ Policies define security rules using osquery for data collection and Lua for eva
 - ✅ **Content Hashing**: SHA-256 hashing for report deduplication (standalone implementation)
 - ✅ **Delivery Queue Schema**: Durable retry_queue with 3-state machine
 - ✅ **Idempotent Deduplication**: UNIQUE constraint on report_hash prevents duplicates
+- ✅ **At-Least-Once Delivery**: HTTP delivery with exponential backoff (1s → 300s)
+- ✅ **Crash Recovery**: Pending reports retried on agent restart
+- ✅ **Backend Deduplication**: FastAPI backend deduplicates by SHA-256 hash
 
-**Not Yet Implemented (Planned Phase 2):**
+**Future Enhancement:**
 
-- ⏳ **Network Delivery**: No HTTP/MQTT clients exist yet
-- ⏳ **Retry Logic**: Exponential backoff not yet wired into main.cpp
-- ⏳ **Crash Recovery on Startup**: load_pending_reports() exists but not called
-- ⏳ **Backend Server**: No endpoint to receive reports
+- ⏳ **MQTT Delivery**: MQTT QoS 1 client for broker-based delivery (HTTP implemented)
+- ⏳ **TLS/HTTPS**: Encrypted transport (currently terminate TLS at reverse proxy)
+- ⏳ **Authentication**: API key/token in HTTP headers
 
 ---
 
@@ -284,14 +286,18 @@ graph LR
     A --> E[Scoring Engine]
     A --> F[(SQLite + WAL)]
     A --> I[JSON Report Writer]
+    A --> RQ[RetryQueue<br/>Exp. Backoff]
     
     F --> G[runs table]
     F --> H[features table]
     F --> J[retry_queue table<br/>PENDING/DELIVERED/FAILED]
     
-    K[DeliveryClient<br/>Interface] --> L[MockDeliveryClient]
-    K -.planned.-> M[HttpDeliveryClient]
+    RQ --> K[DeliveryClient<br/>Interface]
+    K --> L[MockDeliveryClient]
+    K --> M[HttpDeliveryClient<br/>cpp-httplib]
     K -.planned.-> N[MqttDeliveryClient]
+    
+    M --> BE[FastAPI Backend<br/>SHA-256 Dedup]
     
     O[report_hasher] --> P[SHA-256<br/>standalone]
     
@@ -301,14 +307,17 @@ graph LR
     style J fill:#d4edda
     style K fill:#d4edda
     style O fill:#d4edda
+    style RQ fill:#d4edda
+    style M fill:#d4edda
+    style BE fill:#d4edda
 ```
 
 **Legend:**
 - Solid boxes: Implemented
-- Dashed boxes: Planned for completion
+- Dashed lines: Planned (MQTT)
 - Blue: Persistence layer
 - Orange: External process execution
-- Green: Delivery foundation (Phase 2 partial)
+- Green: Delivery layer
 
 **See:** [architecture/README.md](architecture/README.md) for detailed component descriptions.
 
@@ -338,30 +347,42 @@ graph LR
 ```
 Sentinel/
 ├── src/
-│   ├── main.cpp              # Orchestration and evaluation flow
-│   ├── osquery_runner.cpp    # osquery execution with timeout
-│   ├── lua_evaluator.cpp     # Sandboxed Lua runtime
-│   ├── scoring.cpp           # Weighted score computation
-│   ├── db.cpp                # SQLite persistence (WAL mode)
-│   └── json_to_lua.cpp       # JSON-Lua conversion
+│   ├── main.cpp                  # Orchestration, CLI, delivery integration
+│   ├── osquery_runner.cpp        # osquery execution with timeout
+│   ├── lua_evaluator.cpp         # Sandboxed Lua runtime
+│   ├── scoring.cpp               # Weighted score computation
+│   ├── db.cpp                    # SQLite persistence (WAL mode)
+│   ├── json_to_lua.cpp           # JSON-Lua conversion
+│   ├── report_hasher.cpp         # SHA-256 content hashing
+│   ├── delivery_client.cpp       # DeliveryClient interface + MockDeliveryClient
+│   ├── http_delivery_client.cpp  # HTTP POST delivery (cpp-httplib)
+│   └── retry_queue.cpp           # Retry manager with exponential backoff
+├── backend/
+│   ├── server.py                 # FastAPI backend with hash deduplication
+│   ├── requirements.txt          # Python dependencies
+│   └── README.md                 # Backend API documentation
 ├── policies/
-│   └── sample_policy.json    # Example Windows security policy
+│   └── sample_policy.json        # Example Windows security policy
 ├── architecture/
-│   └── README.md             # Current system architecture
+│   └── README.md                 # System architecture documentation
 ├── docs/
-│   ├── trade-offs.md         # Architectural decisions (current)
-│   └── roadmap/              # Phase 2 planning docs
+│   ├── trade-offs.md             # Architectural decisions and alternatives
+│   ├── DELIVERY_QUICKSTART.md    # Delivery layer usage guide
+│   ├── IMPLEMENTATION_SUMMARY.md # Delivery implementation details
+│   └── roadmap/                  # Design documents
 │       ├── IMPLEMENTATION_PLAN.md
 │       ├── CODE_MODULES.md
 │       ├── delivery-state-machine.md
 │       ├── failure-scenarios.md
 │       └── delivery-guarantees.md
+├── test_delivery_foundation.cpp  # Integration tests
 ├── reports/
-│   └── latest_report.json    # Last evaluation result
-├── sentinel_data.sqlite3     # Local database
+│   └── latest_report.json        # Last evaluation result
+├── sentinel_data.sqlite3         # Local database
 └── scripts/
     ├── build.ps1 / build.bat
     ├── run.ps1 / run.bat
+    ├── test.ps1 / test.bat
     └── smoketest.ps1 / smoketest.bat
 ```
 
@@ -370,16 +391,15 @@ Sentinel/
 ## Why This Structure?
 
 **Demonstrates Engineering Depth:**
-- ✅ Working code (Phase 1: complete local evaluation engine)
-- ✅ Foundation implementation (Phase 2 partial: retry queue, hashing, abstractions)
-- ✅ Architectural planning (detailed roadmap for remaining work)
+- ✅ Working local evaluation engine (Phase 1)
+- ✅ Complete HTTP delivery pipeline (Phase 2: retry queue, backoff, dedup, backend)
 - ✅ Production thinking (state machines, failure modes, resource bounds)
+- ✅ Extensible architecture (MQTT can be added via DeliveryClient interface)
 
 **Honest Scope Communication:**
 - Clear separation of "implemented" vs "planned"
-- Explicit time estimates for remaining work
-- Realistic complexity assessments
-- No vaporware - working code first, then architectural plans
+- Working code first, architectural plans for future
+- No vaporware - every checked item has code behind it
 
 **Engineering Quality Signals:**
 - Crash-safe persistence (SQLite WAL)
@@ -400,11 +420,13 @@ Sentinel/
 | **[docs/QUICK_TEST.md](docs/QUICK_TEST.md)** | ✅ Current | 5-minute pre-commit testing guide |
 | **[docs/PRE_COMMIT_TESTING.md](docs/PRE_COMMIT_TESTING.md)** | ✅ Current | Comprehensive 15-minute validation |
 | **[scripts/README.md](scripts/README.md)** | ✅ Current | Build/run/test script documentation |
-| **[docs/roadmap/IMPLEMENTATION_PLAN.md](docs/roadmap/IMPLEMENTATION_PLAN.md)** | 📋 Planning | Phased delivery layer implementation |
-| **[docs/roadmap/CODE_MODULES.md](docs/roadmap/CODE_MODULES.md)** | 📋 Planning | Module architecture and implementation plan |
-| **[docs/roadmap/delivery-state-machine.md](docs/roadmap/delivery-state-machine.md)** | 📋 Planning | Delivery state transitions |
-| **[docs/roadmap/failure-scenarios.md](docs/roadmap/failure-scenarios.md)** | 📋 Planning | Network/crash recovery patterns |
-| **[docs/roadmap/delivery-guarantees.md](docs/roadmap/delivery-guarantees.md)** | 📋 Planning | Formal delivery specifications |
+| **[docs/DELIVERY_QUICKSTART.md](docs/DELIVERY_QUICKSTART.md)** | ✅ Current | Delivery layer usage guide |
+| **[docs/IMPLEMENTATION_SUMMARY.md](docs/IMPLEMENTATION_SUMMARY.md)** | ✅ Current | Delivery implementation details |
+| **[docs/roadmap/IMPLEMENTATION_PLAN.md](docs/roadmap/IMPLEMENTATION_PLAN.md)** | ✅ Complete | Phased delivery layer implementation |
+| **[docs/roadmap/CODE_MODULES.md](docs/roadmap/CODE_MODULES.md)** | ✅ Complete | Module architecture and dependencies |
+| **[docs/roadmap/delivery-state-machine.md](docs/roadmap/delivery-state-machine.md)** | 📋 Reference | Delivery state transitions |
+| **[docs/roadmap/failure-scenarios.md](docs/roadmap/failure-scenarios.md)** | 📋 Reference | Network/crash recovery patterns |
+| **[docs/roadmap/delivery-guarantees.md](docs/roadmap/delivery-guarantees.md)** | 📋 Reference | Formal delivery specifications |
 
 ---
 
@@ -412,11 +434,11 @@ Sentinel/
 
 ### This Project IS:
 
-- ✅ Working local evaluation agent (Phase 1)
-- ✅ Thoughtful delivery layer planning (Phase 2 roadmap)
-- ✅ Demonstration of production-inspired thinking
+- ✅ Working local evaluation agent with osquery + Lua (Phase 1)
+- ✅ Complete HTTP delivery pipeline with retry queue, backoff, dedup (Phase 2)
+- ✅ FastAPI backend with SHA-256 content-addressable deduplication
+- ✅ Demonstration of production-quality patterns (state machines, crash recovery)
 - ✅ Clean separation of concerns architecture
-- ✅ Honest about implementation status
 
 ### This Project is NOT:
 
@@ -426,7 +448,7 @@ Sentinel/
 - ❌ Horizontally scalable backend
 - ❌ Enterprise deployment tooling
 
-**Sentinel is a focused, honest demonstration of agent architecture and delivery semantics planning.**
+**Sentinel is a focused demonstration of agent architecture, durable delivery semantics, and systems engineering.**
 
 ---
 
