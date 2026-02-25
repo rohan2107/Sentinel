@@ -74,4 +74,4 @@ Key decisions for Sentinel's implementation with alternatives, benefits, limitat
 
 ---
 
-**For remaining delivery layer implementation** (HTTP/MQTT clients, RetryQueue manager, main.cpp integration), see [`docs/roadmap/IMPLEMENTATION_PLAN.md`](roadmap/IMPLEMENTATION_PLAN.md).
+**For delivery layer architecture details** (HTTP client, RetryQueue manager, FastAPI backend), see [`docs/roadmap/IMPLEMENTATION_PLAN.md`](roadmap/IMPLEMENTATION_PLAN.md). MQTT delivery client remains as future enhancement.

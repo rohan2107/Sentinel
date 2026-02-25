@@ -117,7 +117,7 @@ std::string canonicalize_json(const nlohmann::json& j);
 
 struct DeliveryResult {
     bool success;
-    int http_code;  // or MQTT reason code
+    int status_code;  // HTTP code or MQTT reason code
     std::string error_message;
 };
 
@@ -167,8 +167,8 @@ private:
 **Implementation Status:**
 - ✅ DeliveryClient interface defined
 - ✅ MockDeliveryClient implemented for testing
+- ✅ HttpDeliveryClient implemented (cpp-httplib)
 - ⏳ MqttDeliveryClient planned
-- ⏳ HttpDeliveryClient planned
 
 **See:** [CODE_MODULES.md](CODE_MODULES.md) for detailed API specs
 
@@ -265,8 +265,8 @@ std::string next_retry = iso8601_now_plus_seconds(backoff_s + jitter_s);
 **Implementation Status:**
 - ✅ QueuedReport struct exists in db.h
 - ✅ load_pending_reports() implemented (crash recovery)
-- ⏳ RetryQueue manager class planned
-- ⏳ Exponential backoff logic planned
+- ✅ RetryQueue manager class implemented
+- ✅ Exponential backoff logic implemented (1s → 300s, ±25% jitter)
 
 ---
 

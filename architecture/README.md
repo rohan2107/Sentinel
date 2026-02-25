@@ -55,7 +55,8 @@ graph TB
 ## Implementation Status
 
 **Phase 1 (Local Evaluation):** ✅ Complete
-**Phase 2 (Delivery Foundation):** ✅ Partial (foundation merged, integration pending)
+**Phase 2 (HTTP Delivery):** ✅ Complete
+**Future:** ⏳ MQTT delivery client
 
 See [`docs/roadmap/IMPLEMENTATION_PLAN.md`](../docs/roadmap/IMPLEMENTATION_PLAN.md) for detailed breakdown.
 
@@ -180,13 +181,13 @@ See [`docs/roadmap/IMPLEMENTATION_PLAN.md`](../docs/roadmap/IMPLEMENTATION_PLAN.
   - Returns 64-character hex string
 - **Use Case**: Deduplication at backend (same report = same hash)
 
-### **DeliveryClient** (delivery_client.cpp) - Phase 2 Foundation ✅
+### **DeliveryClient** (delivery_client.cpp) - Phase 2 ✅
 - **Purpose**: Abstract delivery interface for protocol flexibility
 - **Implemented**:
   - `DeliveryClient` abstract base class (pure virtual)
   - `MockDeliveryClient` for testing (configurable success/failure)
+  - `HttpDeliveryClient` for HTTP POST delivery (cpp-httplib)
 - **Planned**:
-  - `HttpDeliveryClient` for HTTP POST delivery
   - `MqttDeliveryClient` for MQTT QoS 1 publish
 
 ---
@@ -236,11 +237,11 @@ See [`docs/roadmap/IMPLEMENTATION_PLAN.md`](../docs/roadmap/IMPLEMENTATION_PLAN.
 
 **Crash-Safe Queue**: load_pending_reports() restores PENDING reports on restart
 
-### What Is NOT Yet Guaranteed (Phase 2 Remaining)
+### What Is NOT Yet Guaranteed
 
-- **No Active Delivery**: Reports enqueued but not automatically delivered (RetryQueue manager not integrated)
-- **No Exponential Backoff**: Retry metadata schema exists; RetryQueue manager class pending
-- **No Backend Integration**: No HTTP/MQTT clients wired to main.cpp yet
+- **No MQTT Delivery**: Only HTTP delivery is implemented
+- **No Ordered Delivery**: Reports may arrive out of order at backend
+- **No Exactly-Once**: At-least-once semantics; backend deduplicates
 
 ---
 
@@ -313,35 +314,34 @@ See [`docs/roadmap/IMPLEMENTATION_PLAN.md`](../docs/roadmap/IMPLEMENTATION_PLAN.
 
 ### By Design (Intentional Constraints)
 
-- **No Delivery**: Phase 1 only does local evaluation
-- **No Retry Logic**: Failed evaluations are not retried
+- **No MQTT Delivery**: HTTP only (MQTT can be added via DeliveryClient interface)
+- **No TLS**: HTTP-only; terminate TLS at reverse proxy
 - **No Distributed Coordination**: Single-agent only
 - **Windows-Only**: Windows Security Center queries, `osqueryi.exe` paths
 
 ### Technical Debt (Could Improve)
 
 - **Hardcoded Paths**: osquery binary path not configurable
-- **Limited Testing**: No automated test suite (manual testing only)
 - **Basic Logging**: spdlog used but minimal structured logging
 - **No Metrics**: No Prometheus/StatsD instrumentation
+- **No Authentication**: Backend accepts all reports (no API keys)
 
 ---
 
-## Delivery Foundation (Phase 2 - Partial)
+## Delivery Layer (Phase 2 - Complete)
 
-**✅ Implemented (Merged to master):**
+**✅ Implemented:**
 - Durable retry queue (SQLite 3-state machine)
 - SHA-256 content hashing (standalone)
-- DeliveryClient interface + MockDeliveryClient
-- Crash recovery foundation (load_pending_reports)
+- DeliveryClient interface + MockDeliveryClient + HttpDeliveryClient
+- RetryQueue manager with exponential backoff (1s → 300s, ±25% jitter)
+- Crash recovery on startup (load_pending_reports)
+- main.cpp integration (--enable-delivery, --backend-url)
+- FastAPI backend with hash deduplication
 - Integration test suite
 
-**⏳ Remaining (3-4 days):**
-- HTTP delivery client
-- MQTT delivery client
-- RetryQueue manager with exponential backoff
-- Main.cpp integration
-- Minimal backend for testing
+**⏳ Future Enhancement:**
+- MQTT delivery client (QoS 1)
 
 See [`docs/roadmap/`](../docs/roadmap/) for detailed implementation status.
 
@@ -360,13 +360,17 @@ See [`docs/roadmap/`](../docs/roadmap/) for detailed implementation status.
 | `src/db.cpp` | SQLite persistence (WAL) |
 | `src/json_to_lua.cpp` | JSON → Lua table conversion |
 
-**Phase 2 (Delivery Foundation):**
+**Phase 2 (Delivery):**
 
 | File | Purpose |
 |------|---------|
 | `src/db.cpp` (additions) | retry_queue schema + methods |
 | `src/report_hasher.cpp` | SHA-256 content hashing |
 | `src/delivery_client.cpp` | Interface + MockDeliveryClient |
+| `src/http_delivery_client.cpp` | HTTP POST delivery (cpp-httplib) |
+| `src/retry_queue.cpp` | Retry manager with exponential backoff |
+| `src/main.cpp` (additions) | --enable-delivery, crash recovery |
+| `backend/server.py` | FastAPI backend with hash dedup |
 | `test_delivery_foundation.cpp` | Integration tests |
 
 ---
@@ -378,6 +382,7 @@ See [`docs/roadmap/`](../docs/roadmap/) for detailed implementation status.
 - **spdlog**: Logging
 - **sqlite3**: Embedded database
 - **lua**: Lua 5.4 runtime
+- **cpp-httplib**: HTTP client (header-only)
 
 All installed via vcpkg.
 

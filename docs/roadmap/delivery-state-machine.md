@@ -1,25 +1,25 @@
 # Delivery State Machine
 
-> **Status:** Foundation ✅ Implemented | Integration ⏳ Planned
+> **Status:** ✅ Implemented | MQTT ⏳ Future Enhancement
 >
-> The 3-state retry queue is implemented and tested. What remains is wiring the delivery logic into main.cpp and implementing HTTP/MQTT delivery clients.
+> The 3-state retry queue is implemented and integrated. HTTP delivery with exponential backoff is production-ready.
 
 Explicit 3-state machine ensuring at-least-once delivery with durable persistence at each boundary.
 
 ## Implementation Status
 
-**✅ Implemented (Foundation layer):**
+**✅ Implemented:**
 - retry_queue table schema with 3-state CHECK constraint
 - Database operations: enqueue_report, load_pending_reports, mark_delivered, mark_failed, update_retry
 - SHA-256 content hashing (standalone)
-- DeliveryClient abstract interface + MockDeliveryClient
+- DeliveryClient abstract interface + MockDeliveryClient + HttpDeliveryClient
+- RetryQueue manager with exponential backoff (1s → 300s, ±25% jitter)
+- Integration into main.cpp (--enable-delivery, --backend-url)
+- Crash recovery on startup (load_pending_reports)
 - Integration tests covering all state transitions
 
-**⏳ Remaining Work:**
-- HTTP/MQTT delivery client implementations
-- Exponential backoff logic in RetryQueue manager
-- Integration into main.cpp (call enqueue_report after persist_run)
-- Crash recovery on startup (call load_pending_reports)
+**⏳ Future Enhancement:**
+- MQTT delivery client
 
 ---
 
@@ -33,7 +33,7 @@ Explicit 3-state machine ensuring at-least-once delivery with durable persistenc
 |-------|----------------|------------------|-----------------|
 | **PENDING** | Report persisted to DB | `state='PENDING'`, `attempts=0`, `next_retry_at=NULL` | → DELIVERED (success)<br>→ PENDING (retry, update attempts)<br>→ FAILED (max retries) |
 | **DELIVERED** | Backend ACK received | `state='DELIVERED'`, `delivered_at=<timestamp>` | Terminal (no further transitions) |
-| **FAILED** | Max retries exceeded (5) | `state='FAILED'`, `failed_at=<timestamp>`, `last_error=<msg>` | Terminal (manual intervention required) |
+| **FAILED** | Max retries exceeded (10) | `state='FAILED'`, `failed_at=<timestamp>`, `last_error=<msg>` | Terminal (manual intervention required) |
 
 ### State Transitions
 
@@ -78,10 +78,10 @@ CREATE TABLE IF NOT EXISTS retry_queue (
     FOREIGN KEY (run_id) REFERENCES runs(id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_retry_queue_pending 
+CREATE INDEX IF NOT EXISTS idx_retry_state 
     ON retry_queue(state, next_retry_at);
 
-CREATE INDEX IF NOT EXISTS idx_retry_queue_hash 
+CREATE INDEX IF NOT EXISTS idx_retry_hash 
     ON retry_queue(report_hash);
 ```
 
@@ -101,11 +101,9 @@ CREATE INDEX IF NOT EXISTS idx_retry_queue_hash
 3. **State Consistency**: CHECK constraint enforces only valid states
 4. **Atomic Transitions**: Each state change is a single UPDATE (atomic)
 5. **Crash-Safe State**: All state transitions committed to WAL before returning
-
-**⏳ Will Be Guaranteed (After Full Integration):**
-6. **At-Least-Once Delivery**: Reports delivered ≥1 time (when network works)
+6. **At-Least-Once Delivery**: Reports delivered ≥1 time via HTTP (when network works)
 7. **Crash Recovery**: Restart calls load_pending_reports(), resumes delivery
-8. **Exponential Backoff**: Retry delays: 1s → 2s → 4s → 8s → 16s (capped at policy max)
+8. **Exponential Backoff**: Retry delays: 1s → 2s → 4s → ... → 300s (with ±25% jitter)
 9. **Backend Deduplication**: Backend uses report_hash to detect duplicates
 
 ---
@@ -146,24 +144,26 @@ CREATE INDEX IF NOT EXISTS idx_retry_queue_hash
 
 ---
 
-## Backoff Strategy (Planned)
+## Backoff Strategy
 
-**Simplified Exponential Backoff** (no jitter for single agent):
+**Exponential Backoff with ±25% Jitter** (implemented in retry_queue.cpp):
 
 ```cpp
 int backoff_seconds = std::min(300, 1 << attempts);  // Cap at 5 minutes
-std::string next_retry = iso8601_now_plus_seconds(backoff_seconds);
+int jitter = rand() % std::max(1, backoff_seconds / 4);  // ±25% jitter
+std::string next_retry = iso8601_now_plus_seconds(backoff_seconds + jitter);
 ```
 
 **Sequence:**
 - Attempt 0: Immediate (next_retry_at = NULL)
-- Attempt 1: 1 second
-- Attempt 2: 2 seconds
-- Attempt 3: 4 seconds  
-- Attempt 4: 8 seconds
-- Attempt 5: 16 seconds (then FAILED if this fails)
+- Attempt 1: ~1 second
+- Attempt 2: ~2 seconds
+- Attempt 3: ~4 seconds
+- ...
+- Attempt 9: ~300 seconds (cap)
+- Attempt 10: FAILED (max retries exceeded)
 
-**Rationale:** Simple, predictable, sufficient for demo. No jitter needed (single agent, no thundering herd).
+**Rationale:** Jitter prevents thundering herd if multiple agents restart simultaneously.
 
 ---
 

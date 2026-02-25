@@ -1,8 +1,8 @@
 # Code Modules: Delivery Layer
 
-> **Status:** Foundation ✅ Implemented (5 modules) | Remaining ⏳ Planned (4 modules + integration)
+> **Status:** HTTP Delivery ✅ Complete (9 modules) | MQTT ⏳ Future Enhancement
 >
-> The delivery foundation is complete and merged. This document tracks what's done and what remains.
+> All HTTP delivery modules are implemented and merged. MQTT remains as future work.
 
 ## Implementation Progress
 
@@ -13,23 +13,24 @@
 | `delivery_client` (mock) | ✅ Implemented | Low (testing) |
 | `db` (retry_queue schema) | ✅ Implemented | Low (SQL + 6 methods) |
 | `test_delivery_foundation` | ✅ Implemented | Low (integration tests) |
-| `http_delivery_client` | ⏳ Planned | Low (cpp-httplib) |
+| `http_delivery_client` | ✅ Implemented | Low (cpp-httplib) |
+| `retry_queue` (manager) | ✅ Implemented | Low (backoff logic) |
+| `main.cpp` (integration) | ✅ Implemented | Low (glue code) |
+| `backend/server.py` | ✅ Implemented | Low (FastAPI + dedup) |
 | `mqtt_delivery_client` | ⏳ Planned | Medium (paho-mqtt) |
-| `retry_queue` (manager) | ⏳ Planned | Low (backoff logic) |
-| `main.cpp` (integration) | ⏳ Planned | Low (glue code) |
 
 ---
 
 ## Module Dependency Graph
 
 ```
-main.cpp (⏳ integration pending)
+main.cpp ✅ (delivery integration complete)
     ├─→ report_hasher ✅ (SHA-256, canonical JSON)
-    ├─→ retry_queue ⏳ (manager + backoff)
+    ├─→ retry_queue ✅ (manager + backoff)
     │   ├─→ db ✅ (schema + queue operations)
     │   └─→ delivery_client ✅ (interface)
     │       ├─→ MockDeliveryClient ✅ (testing)
-    │       ├─→ HttpDeliveryClient ⏳ (cpp-httplib)
+    │       ├─→ HttpDeliveryClient ✅ (cpp-httplib)
     │       └─→ MqttDeliveryClient ⏳ (paho-mqttpp3)
     └─→ [existing: osquery_runner, lua_evaluator, scoring]
 ```

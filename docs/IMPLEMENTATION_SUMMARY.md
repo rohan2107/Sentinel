@@ -32,7 +32,7 @@
 
 4. **FastAPI Backend** ([backend/server.py](../backend/server.py))
    - Hash-based deduplication (UNIQUE constraint on report_hash)
-   - Idempotent delivery (returns 200 for duplicates, agent treats as success)
+   - Idempotent delivery (returns 409 for duplicates, agent treats as success)
    - Hash verification (prevents tampered reports)
    - SQLite persistence (`backend.db`)
    - RESTful API with health check, list, and get endpoints
