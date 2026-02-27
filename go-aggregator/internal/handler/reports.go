@@ -1,33 +1,37 @@
 // Package handler provides the HTTP handler for the POST /reports endpoint.
-// Full dedup + storage will be wired in the next commit; this stub validates
-// the request shape and returns the correct status codes so the C++ agent's
-// retry logic behaves correctly from day one.
+// Each request is validated, hash-verified, and deduplicated before acceptance.
 package handler
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/rohan2107/sentinel/go-aggregator/internal/dedup"
 )
 
 // reportRequest mirrors the JSON payload the C++ agent sends:
 //
 //	{"report": {...}, "hash": "<sha256-hex>"}
 //
-// report is kept as RawMessage so we can forward it without re-marshalling.
+// report is kept as RawMessage so it can be canonicalised without double-parsing.
 type reportRequest struct {
 	Report json.RawMessage `json:"report"`
 	Hash   string          `json:"hash"`
 }
 
-// Handler handles POST /reports. Implements http.Handler so it can be
-// replaced with a richer version (with dedup cache + storage) in the next
-// commit without touching main.go.
-type Handler struct{}
+// Handler handles POST /reports. Implements http.Handler.
+type Handler struct {
+	dedup *dedup.SeenCache
+}
 
-// New returns a Handler ready to serve requests.
-func New() *Handler { return &Handler{} }
+// New returns a Handler that uses cache for in-memory deduplication.
+func New(cache *dedup.SeenCache) *Handler {
+	return &Handler{dedup: cache}
+}
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
@@ -35,32 +39,56 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var req reportRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		slog.Warn("reports: malformed request body", "err", err, "remote", r.RemoteAddr)
-		writeJSON(w, http.StatusBadRequest, `{"error":"invalid JSON body"}`)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
 		return
 	}
 
 	if req.Hash == "" {
 		slog.Warn("reports: missing hash field", "remote", r.RemoteAddr)
-		writeJSON(w, http.StatusBadRequest, `{"error":"missing hash"}`)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing hash"})
 		return
 	}
 
 	if len(req.Report) == 0 {
 		slog.Warn("reports: empty report field", "hash", req.Hash, "remote", r.RemoteAddr)
-		writeJSON(w, http.StatusBadRequest, `{"error":"missing report"}`)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing report"})
 		return
 	}
 
-	// Stub acceptance — dedup + storage wired in next commit.
-	slog.Info("reports: accepted (stub)", "hash", req.Hash, "latency_ms", time.Since(start).Milliseconds())
-	writeJSON(w, http.StatusOK, `{"status":"accepted","hash":"`+req.Hash+`"}`)
+	// Verify hash: unmarshal report into a map so encoding/json re-marshals it
+	// with sorted keys (canonical form), then compare SHA-256 against req.Hash.
+	// This matches the C++ agent's nlohmann/json canonical serialisation.
+	var m map[string]any
+	if err := json.Unmarshal(req.Report, &m); err != nil {
+		slog.Warn("reports: report field is not a JSON object", "err", err, "remote", r.RemoteAddr)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "report must be a JSON object"})
+		return
+	}
+	canonical, _ := json.Marshal(m)
+	computed := fmt.Sprintf("%x", sha256.Sum256(canonical))
+	if computed != req.Hash {
+		slog.Warn("reports: hash mismatch", "remote", r.RemoteAddr, "want", req.Hash, "got", computed)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "hash mismatch"})
+		return
+	}
+
+	// Dedup: return 409 if this hash was processed recently.
+	if h.dedup.Contains(req.Hash) {
+		slog.Info("reports: duplicate (cache hit)", "hash", req.Hash)
+		writeJSON(w, http.StatusConflict, map[string]string{"status": "duplicate", "hash": req.Hash})
+		return
+	}
+	h.dedup.Add(req.Hash)
+
+	slog.Info("reports: accepted", "hash", req.Hash, "latency_ms", time.Since(start).Milliseconds())
+	writeJSON(w, http.StatusOK, map[string]string{"status": "accepted", "hash": req.Hash})
 }
 
-// writeJSON sets Content-Type and writes a pre-formed JSON body.
-// Using a pre-formed string avoids an extra json.Marshal allocation for
-// simple fixed responses.
-func writeJSON(w http.ResponseWriter, code int, body string) {
+// writeJSON encodes v as JSON, sets Content-Type, and writes the given status code.
+func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	w.Write([]byte(body)) //nolint:errcheck // response write errors are not actionable
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Warn("reports: failed to write response", "err", err)
+	}
 }
