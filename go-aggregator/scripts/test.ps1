@@ -72,6 +72,40 @@ if ($LASTEXITCODE -ne 0) { Fail "go test" }
 Write-Host "[OK] tests" -ForegroundColor Green
 Write-Host ""
 
+# 5. Lint — mirrors the golangci-lint step in CI.
+#    Version constraint: golangci-lint must be built with a Go version >= the 'go'
+#    directive in go.mod. If lint fails with "language version mismatch", run:
+#      go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+#    Install once: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+#    Requires GOPATH/bin on PATH (e.g. C:\Users\<you>\go\bin).
+$lintBin = (Get-Command golangci-lint -ErrorAction SilentlyContinue)
+if ($lintBin) {
+    Write-Host "--- golangci-lint run ./..." -ForegroundColor Yellow
+    golangci-lint run ./...
+    if ($LASTEXITCODE -ne 0) { Fail "golangci-lint" }
+    Write-Host "[OK] lint" -ForegroundColor Green
+} else {
+    Write-Host "--- golangci-lint skipped (not installed)" -ForegroundColor DarkGray
+    Write-Host "    Install: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest" -ForegroundColor DarkGray
+    Write-Host "    Lint always runs in CI." -ForegroundColor DarkGray
+}
+Write-Host ""
+
+# 6. Vulnerability scan — mirrors the govulncheck step in CI.
+#    Install once: go install golang.org/x/vuln/cmd/govulncheck@latest
+$vulnBin = (Get-Command govulncheck -ErrorAction SilentlyContinue)
+if ($vulnBin) {
+    Write-Host "--- govulncheck ./..." -ForegroundColor Yellow
+    govulncheck ./...
+    if ($LASTEXITCODE -ne 0) { Fail "govulncheck" }
+    Write-Host "[OK] vuln scan" -ForegroundColor Green
+} else {
+    Write-Host "--- govulncheck skipped (not installed)" -ForegroundColor DarkGray
+    Write-Host "    Install: go install golang.org/x/vuln/cmd/govulncheck@latest" -ForegroundColor DarkGray
+    Write-Host "    Vuln scan always runs in CI." -ForegroundColor DarkGray
+}
+Write-Host ""
+
 Write-Host "===================================================" -ForegroundColor Cyan
 Write-Host "  ALL CHECKS PASSED" -ForegroundColor Green
 Write-Host "===================================================" -ForegroundColor Cyan
