@@ -1,0 +1,7 @@
+run:
+  # Pin the lint target Go version independently of go.mod.
+  # golangci-lint v1.64.x was built with Go 1.24 and refuses to lint modules
+  # whose go.mod 'go' directive is higher than its own build version.
+  # Our code uses no Go 1.25/1.26-specific features, so linting as 1.24 is
+  # fully accurate. Update this once a golangci-lint release supports go1.26.
+  go: '1.24'
