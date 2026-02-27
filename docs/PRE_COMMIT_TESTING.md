@@ -437,3 +437,124 @@ All green = ready to commit:
 - ✅ CI simulation passes
 
 Time estimate: **10-15 minutes** for full validation
+
+---
+
+---
+
+# Go Aggregator — Pre-Commit Testing
+
+> Applies to any commit touching `go-aggregator/`
+
+## Quick Validation (~1 minute)
+
+```powershell
+# From repo root — runs tidy check, build, vet, and test with race detector
+.\go-aggregator\scripts\test.ps1
+```
+
+All four steps must pass (exit 0) before committing.
+
+---
+
+## Step-by-Step
+
+### Step 1: Tidy check
+
+```powershell
+cd go-aggregator
+go mod tidy
+git diff go.mod go.sum
+```
+
+**Pass:** No diff. If go.mod or go.sum changed, stage and include them in the commit.
+
+### Step 2: Build
+
+```powershell
+go build ./...
+```
+
+**Pass:** Zero output (Go only prints on error).
+
+### Step 3: Vet
+
+```powershell
+go vet ./...
+```
+
+**Pass:** Zero output. Vet catches bugs that compile but are incorrect (e.g., wrong `Printf` format verbs, unreachable code, mutex copies).
+
+### Step 4: Tests
+
+```powershell
+# The test script auto-detects whether CGO is available and adjusts accordingly
+.\go-aggregator\scripts\test.ps1
+
+# Or manually:
+go test -count=1 -v ./...
+```
+
+**Pass:** All subtests show `[PASS]`, final line is `PASS` for each package.
+
+`-count=1` disables Go's test result cache so every run re-executes.
+
+> **Race detector on Windows:** `-race` requires CGO (a GCC/MinGW C compiler). With MSVC only, CGO is unavailable and `-race` is skipped locally. The CI workflow (`ubuntu-latest`) always runs with `-race` — that is where race detection lives. This is a normal tradeoff for Go on Windows.
+
+---
+
+## Pre-Commit Checklist
+
+### Code Quality
+- [ ] `go build ./...` — zero errors
+- [ ] `go vet ./...` — zero warnings
+- [ ] `go test -race -count=1 ./...` — all tests pass
+- [ ] `go mod tidy` — no diff in go.mod / go.sum
+- [ ] No `panic(err)` in library code (only `main.go`)
+- [ ] All blocking calls accept `context.Context`
+- [ ] No unbounded goroutine spawning (worker pool is bounded)
+
+### Documentation
+- [ ] Relevant roadmap doc (`PHASE3_PLAN.md`) status updated
+- [ ] `README.md` updated if capabilities changed
+- [ ] Comments explain *why*, not *what* — especially for concurrency contracts
+
+### Files NOT to commit
+- [ ] `aggregator.db` (runtime database — covered by `.gitignore *.db`)
+- [ ] Any test temp files from `t.TempDir()` (auto-cleaned, but verify)
+
+---
+
+## Troubleshooting
+
+**`go mod tidy` fails or changes go.sum unexpectedly:**
+```powershell
+# Ensure you're in go-aggregator/, not the repo root
+cd go-aggregator
+go mod tidy
+```
+
+**Race condition detected:**
+```
+WARNING: DATA RACE
+Read at 0x... by goroutine N:
+```
+The test output will show the exact file and line. Fix the race before committing — adding a missing `sync.RWMutex` or ensuring the worker pool owns all writes.
+
+**Test uses wrong working directory:**
+Tests in `internal/` should use `t.TempDir()` for any file paths, not relative paths, so they work from any CWD.
+
+---
+
+## Success Criteria — Go Aggregator
+
+All green = ready to commit:
+
+- ✅ `go build ./...` — clean
+- ✅ `go vet ./...` — clean
+- ✅ `go test -race -count=1 ./...` — all pass
+- ✅ `go mod tidy` — no diff
+- ✅ Roadmap doc updated
+- ✅ README updated (if capabilities changed)
+
+Time estimate: **~1 minute** (Go toolchain is fast)

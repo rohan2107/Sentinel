@@ -1,7 +1,7 @@
 # GitHub Copilot Instructions — Sentinel
 
 ## What This Project Is
-Security compliance agent (C++17). Portfolio project demonstrating: osquery + Lua policy evaluation, SQLite retry queue with at-least-once delivery, SHA-256 content-addressable deduplication. See `docs/roadmap/IMPLEMENTATION_PLAN.md` for current status.
+Security compliance agent (C++17) with a Go aggregation backend. Portfolio project demonstrating: osquery + Lua policy evaluation, SQLite retry queue with at-least-once delivery, SHA-256 content-addressable deduplication, concurrent ingestion via Go goroutines, Prometheus observability, and Docker Compose orchestration. See `docs/roadmap/IMPLEMENTATION_PLAN.md` for C++ delivery status; `docs/roadmap/EXPANSION_PLAN.md` for Phase 3+ roadmap.
 
 ---
 
@@ -24,22 +24,37 @@ Security compliance agent (C++17). Portfolio project demonstrating: osquery + Lu
 
 ## Project Structure
 ```
-src/           # Core C++ implementation (main.cpp orchestrates)
-backend/       # FastAPI backend (server.py, hash dedup)
-docs/roadmap/  # Phase plans with ✅/⏳/❌ status
-test_*.cpp     # Integration tests at root level
-scripts/       # PowerShell build/run/test automation
-policies/      # Sample policy JSON files
+src/             # Core C++ implementation (main.cpp orchestrates)
+backend/         # FastAPI prototype backend (server.py) — kept for reference
+go-aggregator/   # Go aggregation service (Phase 3) — goroutines, Prometheus, SQLite
+load-sim/        # Go load simulation harness (Phase 4) — benchmark tool
+docs/roadmap/    # Phase plans with ✅/⏳/❌ status
+test_*.cpp       # Integration tests at root level
+scripts/         # PowerShell build/run/test automation
+policies/        # Sample policy JSON files
+prometheus/      # Prometheus scrape config (docker-compose)
+mosquitto/       # Mosquitto broker config (docker-compose, Phase 3.5)
+docker-compose.yml  # One-command demo: aggregator + Prometheus + Grafana (+ Mosquitto in 3.5)
 ```
 
 ---
 
 ## Quality Gates (required before marking anything done)
+
+**C++ changes:**
 - All tests pass: `.\scripts\test.ps1`
 - Smoke test: `.\scripts\smoketest.ps1`
 - Zero MSVC `/W4` warnings
 - `docs/roadmap/IMPLEMENTATION_PLAN.md` status updated
-- `README.md` updated if capabilities changed
+
+**Go changes:**
+- `go build ./...` — zero errors
+- `go test ./...` — all tests pass
+- `go vet ./...` — zero warnings
+
+**Any change:**
+- `README.md` updated if capabilities or structure changed
+- Relevant roadmap doc (`PHASE3_PLAN.md`, `MQTT_PLAN.md`, etc.) status updated
 
 ---
 
@@ -61,13 +76,46 @@ Persist intent before side effects. DB write → network call → DB confirm. Al
 
 ---
 
+## Go Conventions (go-aggregator/, load-sim/)
+
+**Naming**: Packages `lowercase`, exported types/funcs `PascalCase`, unexported `camelCase`, files `snake_case.go`
+
+**Go patterns to follow:**
+- Return `(T, error)` — never panic on recoverable errors
+- Use `context.Context` for cancellation on all blocking operations (DB writes, MQTT, HTTP)
+- `defer rows.Close()` / `defer stmt.Close()` immediately after successful open
+- Channel-based worker pools: buffer size = worker count; full channel = backpressure (return 503)
+- `sync.RWMutex` for shared state (dedup cache); hold read lock for reads, write lock only for writes
+- Structured logging with `log/slog` (Go 1.21+): `slog.Info("stored report", "hash", hash, "latency_ms", ms)`
+
+**Error messages**: wrap with context — `fmt.Errorf("storage.Write: %w", err)`, not `"error"`
+
+**Testing:**
+- Use `t.TempDir()` for temporary SQLite databases — auto-cleaned after test
+- Table-driven tests with `t.Run(name, func(t *testing.T) {...})`
+- Test both happy path and error paths (dedup hit, backpressure, malformed JSON)
+- Format: `t.Logf("[PASS] %s", description)` — consistent with C++ test style
+
+**Comments**: explain *why*, not *what*. Document concurrency contracts, channel semantics, and backpressure behavior.
+
+---
+
 ## Anti-Patterns
-❌ `throw std::runtime_error("database error")` — be specific  
-❌ `sqlite3_finalize` after throw — finalize before  
-❌ Skipping NULL checks on `sqlite3_column_text`  
-❌ Adding dependencies when a standalone implementation suffices  
-❌ Claiming done without running test + smoke scripts  
+
+**C++:**
+❌ `throw std::runtime_error("database error")` — be specific
+❌ `sqlite3_finalize` after throw — finalize before
+❌ Skipping NULL checks on `sqlite3_column_text`
+❌ Adding dependencies when a standalone implementation suffices
+❌ Claiming done without running test + smoke scripts
 ❌ Committing without updating the roadmap status
+
+**Go:**
+❌ `panic(err)` for recoverable errors — return `(T, error)`
+❌ Unbounded goroutine spawning — always use a worker pool with a fixed channel buffer
+❌ Ignoring `context.Context` cancellation — all blocking calls must respect ctx
+❌ Global mutable state without a mutex — make concurrency ownership explicit
+❌ `log.Fatalf` inside library code — only in `main.go`
 
 ---
 
