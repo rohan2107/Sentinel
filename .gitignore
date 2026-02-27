@@ -20,6 +20,9 @@
 # macOS
 .DS_Store
 
+# Claude Code agent memory/plans (local only)
+.claude/
+
 # Temporary files
 *.bak
 *.tmp

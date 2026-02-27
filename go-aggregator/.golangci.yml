@@ -1,0 +1,5 @@
+run:
+  # Keep lint target pinned to the go.mod 'go' directive.
+  # Update this if go.mod is bumped to a version newer than the golangci-lint
+  # release in use — golangci-lint must be compiled with >= that Go version.
+  go: '1.24'

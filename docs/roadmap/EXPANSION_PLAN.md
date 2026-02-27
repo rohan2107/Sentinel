@@ -1,8 +1,22 @@
 # Expansion Plan: Go Aggregation Service + Load Simulation
 
-> **Status:** Planning  
-> **Date:** February 25, 2026  
+> **Status:** Planning — Phase 3 starting next
+> **Date:** February 27, 2026 (updated)
 > **Goal:** Make Sentinel's architecture demonstrably scalable — not just "it works" but "here's how it performs under load"
+
+## Decisions Made (Feb 27, 2026)
+
+| Question | Decision | Rationale |
+|----------|----------|-----------|
+| Go aggregator storage? | SQLite first | Consistent with agent; single binary; migration to Postgres is a talking point, not a requirement |
+| Docker Compose? | Yes — Phase 3 | Bundles aggregator + Prometheus + Grafana; one-command demo for recruiters |
+| MQTT? | Phase 3.5 — not deferred indefinitely | Proves the DeliveryClient interface; adds pub/sub pattern; Mosquitto added to Docker Compose |
+
+**Revised phase ordering:**
+- **Phase 3**: Go aggregation service + Docker Compose (HTTP ingestion, Prometheus, Grafana)
+- **Phase 3.5**: MQTT delivery client (C++ MqttDeliveryClient + Go MQTT subscriber + Mosquitto in Compose)
+- **Phase 4**: Load simulation harness (Go CLI, goroutines, real benchmark numbers)
+- **Phase 5**: Documentation + README performance section
 
 ---
 
@@ -190,9 +204,18 @@ The current state has working at-least-once delivery from a single agent. After 
 
 ---
 
-## Open Questions
+## Open Questions — RESOLVED
 
-1. **Storage backend**: Start with SQLite (consistency with agent), migrate to Postgres when multi-agent concurrency demands it?
-2. **MQTT vs HTTP**: Keep HTTP for simplicity, or add MQTT broker to demonstrate pub/sub pattern?
-3. **Grafana dashboard**: Worth setting up, or Prometheus `/metrics` endpoint + screenshots sufficient?
-4. **Docker Compose**: Bundle agent + aggregator + Prometheus + Grafana for one-command demo?
+| Question | Resolution |
+|----------|-----------|
+| **Storage backend** | SQLite first. Migration to Postgres is a talking point ("when horizontal write scale is needed"), not a Phase 3 requirement. |
+| **MQTT vs HTTP** | Both — HTTP in Phase 3 (proves the pattern), MQTT in Phase 3.5 (proves the abstraction). See `MQTT_PLAN.md`. |
+| **Grafana dashboard** | Yes — included in Docker Compose. Grafana with anonymous read access; Prometheus as datasource. |
+| **Docker Compose** | Yes — Phase 3. One-command demo: `docker-compose up`. Services: aggregator + Prometheus + Grafana. Mosquitto added in Phase 3.5. |
+
+## Detailed Plans
+
+| Phase | Plan Document |
+|-------|--------------|
+| Phase 3: Go aggregation service + Docker Compose | [`PHASE3_PLAN.md`](PHASE3_PLAN.md) |
+| Phase 3.5: MQTT delivery client | [`MQTT_PLAN.md`](MQTT_PLAN.md) |

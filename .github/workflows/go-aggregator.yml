@@ -1,0 +1,60 @@
+name: Go Aggregator CI
+
+on:
+  push:
+    # No branch filter — runs on any branch where go-aggregator/ files change.
+    paths:
+      - 'go-aggregator/**'
+      - '.github/workflows/go-aggregator.yml'
+  pull_request:
+    branches: [ master ]
+    paths:
+      - 'go-aggregator/**'
+      - '.github/workflows/go-aggregator.yml'
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: go-aggregator
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go-aggregator/go.mod  # reads 'go' directive — no hardcoded version
+          cache: true                              # caches module cache between runs
+
+      - name: Verify go.mod is tidy
+        run: |
+          go mod tidy
+          # git diff fails with "no such path" for untracked files; use ls-files to check
+          # what is actually tracked, then diff only those.
+          TRACKED=$(git ls-files go.mod go.sum)
+          git diff --exit-code $TRACKED || (echo "ERROR: run 'go mod tidy' locally and commit the result" && exit 1)
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test (race detector enabled)
+        # -race catches data races in concurrent code — critical for this service.
+        # -count=1 disables the test cache so every CI run executes tests fresh.
+        run: go test -race -count=1 -v ./...
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          working-directory: go-aggregator
+          version: latest
+
+      - name: Vulnerability scan
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
