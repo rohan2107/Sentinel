@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/rohan2107/sentinel/go-aggregator/internal/dedup"
 	"github.com/rohan2107/sentinel/go-aggregator/internal/handler"
 )
 
@@ -32,10 +33,16 @@ func main() {
 		"cache_size", *cacheSize,
 	)
 
+	cache, err := dedup.New(*cacheSize)
+	if err != nil {
+		slog.Error("failed to initialise dedup cache", "err", err)
+		os.Exit(1)
+	}
+
 	// Route registration uses Go 1.22 method+path patterns.
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", handleHealth)
-	mux.Handle("POST /reports", handler.New())
+	mux.Handle("POST /reports", handler.New(cache))
 
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", *port),
