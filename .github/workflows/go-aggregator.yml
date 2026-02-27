@@ -32,7 +32,10 @@ jobs:
       - name: Verify go.mod is tidy
         run: |
           go mod tidy
-          git diff --exit-code go.mod go.sum || (echo "ERROR: run 'go mod tidy' locally and commit the result" && exit 1)
+          # git diff fails with "no such path" for untracked files; use ls-files to check
+          # what is actually tracked, then diff only those.
+          TRACKED=$(git ls-files go.mod go.sum)
+          git diff --exit-code $TRACKED || (echo "ERROR: run 'go mod tidy' locally and commit the result" && exit 1)
 
       - name: Build
         run: go build ./...
