@@ -68,6 +68,27 @@ func TestLRUEviction(t *testing.T) {
 	}
 }
 
+func TestContains_UpdatesRecency(t *testing.T) {
+	c, err := dedup.New(3)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	c.Add("a")
+	c.Add("b")
+	c.Add("c")
+	if !c.Contains("a") {
+		t.Fatal("expected 'a' to be present before recency touch")
+	}
+	c.Add("d")
+
+	if c.Contains("b") {
+		t.Fatal("expected 'b' to be evicted after touching 'a' and adding 'd'")
+	}
+	if !c.Contains("a") {
+		t.Fatal("expected 'a' to remain due to recency touch")
+	}
+}
+
 func TestConcurrentAddContains(t *testing.T) {
 	c, err := dedup.New(1000)
 	if err != nil {
@@ -85,4 +106,33 @@ func TestConcurrentAddContains(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+func TestContainsOrAdd_Atomic(t *testing.T) {
+	c, err := dedup.New(10)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	const goroutines = 100
+	var wg sync.WaitGroup
+	seenCount := 0
+	var seenMu sync.Mutex
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if c.ContainsOrAdd("same-hash") {
+				seenMu.Lock()
+				seenCount++
+				seenMu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	if seenCount != goroutines-1 {
+		t.Fatalf("expected %d duplicate hits, got %d", goroutines-1, seenCount)
+	}
 }

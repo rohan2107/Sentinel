@@ -3,6 +3,7 @@
 package handler
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -64,7 +65,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "report must be a JSON object"})
 		return
 	}
-	canonical, _ := json.Marshal(m)
+	if m == nil {
+		slog.Warn("reports: report field is null", "remote", r.RemoteAddr)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "report must be a JSON object"})
+		return
+	}
+	canonical, err := canonicalizeMap(m)
+	if err != nil {
+		slog.Warn("reports: failed to canonicalize report", "err", err, "remote", r.RemoteAddr)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid report"})
+		return
+	}
 	computed := fmt.Sprintf("%x", sha256.Sum256(canonical))
 	if computed != req.Hash {
 		slog.Warn("reports: hash mismatch", "remote", r.RemoteAddr, "want", req.Hash, "got", computed)
@@ -73,15 +84,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Dedup: return 409 if this hash was processed recently.
-	if h.dedup.Contains(req.Hash) {
+	if h.dedup.ContainsOrAdd(req.Hash) {
 		slog.Info("reports: duplicate (cache hit)", "hash", req.Hash)
 		writeJSON(w, http.StatusConflict, map[string]string{"status": "duplicate", "hash": req.Hash})
 		return
 	}
-	h.dedup.Add(req.Hash)
 
 	slog.Info("reports: accepted", "hash", req.Hash, "latency_ms", time.Since(start).Milliseconds())
 	writeJSON(w, http.StatusOK, map[string]string{"status": "accepted", "hash": req.Hash})
+}
+
+func canonicalizeMap(m map[string]any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(m); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte{'\n'}), nil
 }
 
 // writeJSON encodes v as JSON, sets Content-Type, and writes the given status code.

@@ -21,7 +21,10 @@ func reportHash(t *testing.T, reportJSON string) string {
 	if err := json.Unmarshal([]byte(reportJSON), &m); err != nil {
 		t.Fatalf("reportHash: invalid JSON: %v", err)
 	}
-	canonical, _ := json.Marshal(m)
+	canonical, err := canonicalizeMap(m)
+	if err != nil {
+		t.Fatalf("reportHash: canonicalizeMap failed: %v", err)
+	}
 	return fmt.Sprintf("%x", sha256.Sum256(canonical))
 }
 
@@ -54,6 +57,11 @@ func TestHandleReports_ValidationErrors(t *testing.T) {
 		{
 			name:     "missing report field rejected",
 			body:     `{"hash":"abc123"}`,
+			wantCode: http.StatusBadRequest,
+		},
+		{
+			name:     "null report rejected",
+			body:     `{"report":null,"hash":"abc123"}`,
 			wantCode: http.StatusBadRequest,
 		},
 		{
@@ -102,6 +110,23 @@ func TestHandleReports_HashMismatch(t *testing.T) {
 func TestHandleReports_ValidReport(t *testing.T) {
 	h := newHandler(t)
 	reportJSON := `{"score":75,"policy":"baseline"}`
+	hash := reportHash(t, reportJSON)
+	body := fmt.Sprintf(`{"report":%s,"hash":"%s"}`, reportJSON, hash)
+
+	req := httptest.NewRequest(http.MethodPost, "/reports", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("got status %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleReports_ValidReportWithHTMLEscapableChars(t *testing.T) {
+	h := newHandler(t)
+	reportJSON := `{"policy":"x<y && y>z","note":"a&b"}`
 	hash := reportHash(t, reportJSON)
 	body := fmt.Sprintf(`{"report":%s,"hash":"%s"}`, reportJSON, hash)
 

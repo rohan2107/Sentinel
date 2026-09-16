@@ -4,6 +4,8 @@
 package dedup
 
 import (
+	"sync"
+
 	lru "github.com/hashicorp/golang-lru/v2"
 )
 
@@ -13,6 +15,7 @@ import (
 // All methods are safe for concurrent use.
 type SeenCache struct {
 	cache *lru.Cache[string, struct{}]
+	mu    sync.Mutex
 }
 
 // New creates a SeenCache with the given capacity.
@@ -26,12 +29,29 @@ func New(size int) (*SeenCache, error) {
 }
 
 // Contains reports whether hash is present in the cache.
-// Does not update recency order — use only for read-only checks.
+// A hit updates recency order so hot duplicates stay resident.
 func (c *SeenCache) Contains(hash string) bool {
-	return c.cache.Contains(hash)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.cache.Get(hash)
+	return ok
 }
 
 // Add records hash in the cache, evicting the oldest entry if at capacity.
 func (c *SeenCache) Add(hash string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.cache.Add(hash, struct{}{})
+}
+
+// ContainsOrAdd atomically checks whether hash is present and inserts it when absent.
+// Returns true when hash was already present, false when it was newly added.
+func (c *SeenCache) ContainsOrAdd(hash string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.cache.Get(hash); ok {
+		return true
+	}
+	c.cache.Add(hash, struct{}{})
+	return false
 }
