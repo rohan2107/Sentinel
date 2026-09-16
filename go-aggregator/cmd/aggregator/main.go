@@ -11,13 +11,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/rohan2107/sentinel/go-aggregator/internal/dedup"
 	"github.com/rohan2107/sentinel/go-aggregator/internal/handler"
 )
 
 func main() {
-	port      := flag.Int("port", 8080, "HTTP listen port")
-	dbPath    := flag.String("db-path", "aggregator.db", "Path to SQLite database")
-	workers   := flag.Int("workers", 4, "Number of storage worker goroutines")
+	port := flag.Int("port", 8080, "HTTP listen port")
+	dbPath := flag.String("db-path", "aggregator.db", "Path to SQLite database")
+	workers := flag.Int("workers", 4, "Number of storage worker goroutines")
 	cacheSize := flag.Int("cache-size", 1000, "LRU dedup cache size (number of hashes)")
 	flag.Parse()
 
@@ -32,10 +33,16 @@ func main() {
 		"cache_size", *cacheSize,
 	)
 
+	cache, err := dedup.New(*cacheSize)
+	if err != nil {
+		slog.Error("failed to initialise dedup cache", "err", err)
+		os.Exit(1)
+	}
+
 	// Route registration uses Go 1.22 method+path patterns.
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", handleHealth)
-	mux.Handle("POST /reports", handler.New())
+	mux.Handle("POST /reports", handler.New(cache))
 
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%d", *port),
@@ -78,5 +85,7 @@ func main() {
 
 func handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprint(w, `{"status":"ok"}`)
+	if _, err := fmt.Fprint(w, `{"status":"ok"}`); err != nil {
+		slog.Warn("failed to write health response", "err", err)
+	}
 }
