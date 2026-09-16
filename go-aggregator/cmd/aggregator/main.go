@@ -16,9 +16,9 @@ import (
 )
 
 func main() {
-	port      := flag.Int("port", 8080, "HTTP listen port")
-	dbPath    := flag.String("db-path", "aggregator.db", "Path to SQLite database")
-	workers   := flag.Int("workers", 4, "Number of storage worker goroutines")
+	port := flag.Int("port", 8080, "HTTP listen port")
+	dbPath := flag.String("db-path", "aggregator.db", "Path to SQLite database")
+	workers := flag.Int("workers", 4, "Number of storage worker goroutines")
 	cacheSize := flag.Int("cache-size", 1000, "LRU dedup cache size (number of hashes)")
 	flag.Parse()
 
@@ -85,5 +85,7 @@ func main() {
 
 func handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprint(w, `{"status":"ok"}`)
+	if _, err := fmt.Fprint(w, `{"status":"ok"}`); err != nil {
+		slog.Warn("failed to write health response", "err", err)
+	}
 }
