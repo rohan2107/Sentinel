@@ -23,27 +23,7 @@ this list.
 
 ## Short term
 
-### 1. Bound Lua execution — *the one real bug*
-
-A policy containing `while true do end` hangs the agent forever. There is no
-timeout despite three documents having claimed one. Measured: a rule running a
-3-billion-iteration loop ran 9.75s and returned normally.
-
-This matters more than anything else here because policies are *data* that the
-evaluation loop executes, so this is reachable by a bad policy file, not just by
-a bug.
-
-The design decision to make: `lua_sethook` with `LUA_MASKCOUNT` is simple but
-counts VM instructions rather than time, so the effective limit varies with what
-the rule does. A wall-clock check inside the hook is more faithful but needs care
-about where it is safe to raise an error from. Either way the sandbox stays a
-resource bound and not a security boundary — policy authorship remains trusted,
-and that should stay written down.
-
-Done when: a rule that exceeds the bound is recorded as failed, the agent
-continues to the next rule, and a test asserts it with a real runaway loop.
-
-### 2. Heartbeat
+### 1. Heartbeat
 
 Now that unchanged posture is suppressed, silence is ambiguous: a healthy agent
 and a dead one look identical. Suppression is only correct if liveness is
@@ -59,7 +39,7 @@ Note this changes the wire format, so
 [`tests/canonicalization`](../tests/canonicalization/README.md) is the guard —
 expect `golden.json` to change and review that diff deliberately.
 
-### 3. Bound the retry queue
+### 2. Bound the retry queue
 
 `retry_queue` has no size cap, no age cutoff and no pruning of terminal rows. It
 holds the full `report_json` per entry, so an agent that cannot reach its backend
@@ -117,7 +97,7 @@ the one that is easy to measure. Keep it as the follow-on rather than the
 starting point: the simple evictor bounds the disk, and the priority version then
 has a baseline to prove itself against.
 
-### 4. Validate the number range at the hash boundary
+### 3. Validate the number range at the hash boundary
 
 The canonicalization contract supports integers within ±(2^53−1) and no floats.
 Outside that, the three implementations disagree, because Go decodes JSON numbers
@@ -129,9 +109,9 @@ Done when: values outside the contract are rejected with a specific message at
 the agent *and* at both receivers, and the two `expect: "diverge"` fixtures
 become rejection tests.
 
-### 5. Measure the traffic reduction properly
+### 4. Measure the traffic reduction properly
 
-Only after items 1–4. The mechanism works and is tested but no number exists,
+Only after items 1–3. The mechanism works and is tested but no number exists,
 and the number is the point.
 
 Design the measurement before collecting it:
@@ -148,14 +128,6 @@ Design the measurement before collecting it:
 Done when the README can say something like "at a 60s evaluation interval with
 posture changing every N hours, delivered bytes fall X% against unconditional
 reporting, heartbeats included" and a script reproduces it.
-
-### 6. Finish the honest-README pass
-
-Corrected so far: the Lua timeout, the resource bounds, and the scoring formula.
-Still overstated: "PRODUCTION-READY", "Comprehensive testing", and a Phase 2
-checklist that reads as more complete than the code is. This is the cheapest item
-on the list and the one that most changes how the repo reads to someone opening
-it cold.
 
 ---
 

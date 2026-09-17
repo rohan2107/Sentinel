@@ -30,11 +30,12 @@ Key decisions for Sentinel's implementation with alternatives, benefits, limitat
 
 **Why**: Deploy rules as JSON (no recompile), sandboxed (no I/O), human-readable, 200KB VM, 0.1-1ms eval.
 
-**Cost**: 100x slower than C++. Security: a malicious or buggy policy can loop
-forever — **no timeout or instruction limit is implemented**, despite earlier
-claims here. Only the library surface is restricted (`base`, `table`, `string`,
-`math`), which prevents I/O but not CPU exhaustion. Policy authorship must be
-trusted. See [architecture/README.md](../architecture/README.md#known-gaps).
+**Cost**: 100x slower than C++. Security: the library surface is restricted
+(`base`, `table`, `string`, `math`), which prevents I/O, and a 1s CPU bound
+(`lua_sethook`, `LUA_MASKCOUNT`) stops a buggy or malicious policy from looping
+forever — both are resource bounds, not a security boundary. Policy authorship
+must still be trusted. See
+[architecture/README.md](../architecture/README.md#resource-bounds).
 
 **Fails When**: Complex rules, µs latency required, formal verification needed.
 
