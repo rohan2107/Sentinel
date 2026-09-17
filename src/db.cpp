@@ -7,6 +7,25 @@
 struct DB::Impl {
     sqlite3* db = nullptr;
 
+    // The runs.id from the most recent persist_run() call, captured
+    // immediately after that specific INSERT.
+    //
+    // get_last_run_id() used to call sqlite3_last_insert_rowid(db) itself,
+    // which returns the rowid of the most recent insert on the *connection*,
+    // not specifically from `runs`. That was silently correct only because
+    // the old features table's run_id column was declared INTEGER PRIMARY
+    // KEY, which SQLite aliases directly to the rowid, so inserting into it
+    // with our own run_id value left last_insert_rowid() equal to that same
+    // value by coincidence. rule_results has a composite primary key
+    // (run_id, rule_id), which is not rowid-aliased, so its own internal
+    // rowid counter leaked through instead once persist_run started
+    // inserting into it -- get_last_run_id() returned the count of
+    // rule_results rows ever inserted, not the run id. Caching the value
+    // at the one point it is actually known removes the fragility instead
+    // of relying on no later insert ever running before get_last_run_id()
+    // is called.
+    sqlite3_int64 last_run_id = 0;
+
     // Whether table already has the named column, via PRAGMA table_info.
     // Used to make the additive schema migrations idempotent.
     bool column_exists(const char* table, const char* column) const {
@@ -55,14 +74,27 @@ void DB::init_schema() {
       details_json TEXT
     );
 
-    -- flattened features table: one row per run, could be extended with more columns for ML
-    CREATE TABLE IF NOT EXISTS features (
-      run_id INTEGER PRIMARY KEY,
-      firewall_enabled INTEGER,
-      av_installed INTEGER,
-      -- add more feature columns here
+    -- Per-rule outcomes, one row per (run, rule) rather than one column per
+    -- rule name. Replaces an earlier "features" table that hardcoded
+    -- firewall_enabled/av_installed as literal SQL columns -- which silently
+    -- dropped every other rule's outcome, and assumed rule ids are shared
+    -- across platforms when policies are actually per-device (see
+    -- policies/macos_policy.json vs policies/sample_policy.json). This shape
+    -- needs no schema change when any future policy on any platform
+    -- introduces a new rule id.
+    --
+    -- weight is stored as applied to THIS run, not looked up later from a
+    -- policy file that may since have changed.
+    CREATE TABLE IF NOT EXISTS rule_results (
+      run_id INTEGER NOT NULL,
+      rule_id TEXT NOT NULL,
+      passed INTEGER NOT NULL,
+      weight INTEGER NOT NULL,
+      PRIMARY KEY (run_id, rule_id),
       FOREIGN KEY(run_id) REFERENCES runs(id)
     );
+
+    CREATE INDEX IF NOT EXISTS idx_rule_results_rule ON rule_results(rule_id);
 
     -- retry queue for at-least-once delivery semantics
     CREATE TABLE IF NOT EXISTS retry_queue (
@@ -110,13 +142,28 @@ void DB::init_schema() {
             throw std::runtime_error("sqlite add posture_hash column: " + e);
         }
     }
+
+    // Deliberate exception to "additive only" migrations: the old features
+    // table did not just go unused, it actively returned wrong data (0/absent
+    // for any rule outside the two hardcoded columns), so wrong-and-present is
+    // worse than dropped. DROP TABLE IF EXISTS never errors on a database that
+    // never had the table, so this is safe to run unconditionally on every
+    // startup rather than needing an existence guard like the ALTER above.
+    // Nothing reads "features" -- confirmed against backend/, go-aggregator/
+    // and the docs -- so there is no data migration path to preserve here.
+    if (sqlite3_exec(p->db, "DROP TABLE IF EXISTS features;", nullptr, nullptr, &errmsg) != SQLITE_OK) {
+        std::string e = errmsg ? errmsg : "unknown";
+        sqlite3_free(errmsg);
+        throw std::runtime_error("sqlite drop features table: " + e);
+    }
 }
 
 void DB::persist_run(const std::string& iso_ts,
                      const std::string& hostname,
                      const std::string& policy,
                      int score,
-                     const nlohmann::json& details) {
+                     const nlohmann::json& details,
+                     const nlohmann::json& rule_results) {
     // begin transaction
     char* errmsg = nullptr;
     sqlite3_exec(p->db, "BEGIN IMMEDIATE;", nullptr, nullptr, &errmsg);
@@ -140,30 +187,43 @@ void DB::persist_run(const std::string& iso_ts,
     }
     sqlite3_finalize(stmt);
 
-    // get last inserted id
+    // Get the id of the run just inserted, and cache it for get_last_run_id()
+    // *before* any further inserts on this connection (rule_results, below)
+    // can change what sqlite3_last_insert_rowid() reports. See the comment on
+    // Impl::last_run_id for why this is not just belt-and-braces.
     sqlite3_int64 run_id = sqlite3_last_insert_rowid(p->db);
+    p->last_run_id = run_id;
 
-    // insert features (flattened)
-    const char* insert_features = "INSERT OR REPLACE INTO features (run_id, firewall_enabled, av_installed) VALUES (?, ?, ?);";
-    sqlite3_stmt* fstmt = nullptr;
-    if (sqlite3_prepare_v2(p->db, insert_features, -1, &fstmt, nullptr) != SQLITE_OK) {
-        throw std::runtime_error("sqlite prepare insert_features");
-    }
-    sqlite3_bind_int64(fstmt, 1, run_id);
-    int fw = 0;
-    int av = 0;
-    try {
-        if (details.contains("firewall_enabled")) fw = details.at("firewall_enabled").get<bool>() ? 1 : 0;
-        if (details.contains("av_installed")) av = details.at("av_installed").get<bool>() ? 1 : 0;
-    } catch (...) { /* best-effort */ }
-    sqlite3_bind_int(fstmt, 2, fw);
-    sqlite3_bind_int(fstmt, 3, av);
+    // Insert one row per rule result. rule_results is a flat array of
+    // {rule_id, passed, weight} built by the caller during rule evaluation,
+    // where the policy's rule definitions (and their weights) are already in
+    // scope -- db.cpp deliberately knows nothing about policy/report JSON
+    // shape beyond this already-flattened form.
+    if (!rule_results.empty()) {
+        const char* insert_rule_result =
+            "INSERT OR REPLACE INTO rule_results (run_id, rule_id, passed, weight) VALUES (?, ?, ?, ?);";
+        sqlite3_stmt* rstmt = nullptr;
+        if (sqlite3_prepare_v2(p->db, insert_rule_result, -1, &rstmt, nullptr) != SQLITE_OK) {
+            throw std::runtime_error("sqlite prepare insert_rule_result");
+        }
+        for (const auto& rr : rule_results) {
+            const std::string rule_id = rr.value("rule_id", std::string());
+            if (rule_id.empty()) continue; // defensive: skip malformed entries
 
-    if (sqlite3_step(fstmt) != SQLITE_DONE) {
-        sqlite3_finalize(fstmt);
-        throw std::runtime_error("sqlite insert_features step failed");
+            sqlite3_reset(rstmt);
+            sqlite3_clear_bindings(rstmt);
+            sqlite3_bind_int64(rstmt, 1, run_id);
+            sqlite3_bind_text(rstmt, 2, rule_id.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(rstmt, 3, rr.value("passed", false) ? 1 : 0);
+            sqlite3_bind_int(rstmt, 4, rr.value("weight", 0));
+
+            if (sqlite3_step(rstmt) != SQLITE_DONE) {
+                sqlite3_finalize(rstmt);
+                throw std::runtime_error("sqlite insert_rule_result step failed");
+            }
+        }
+        sqlite3_finalize(rstmt);
     }
-    sqlite3_finalize(fstmt);
 
     // commit
     if (sqlite3_exec(p->db, "COMMIT;", nullptr, nullptr, &errmsg) != SQLITE_OK) {
@@ -205,8 +265,30 @@ nlohmann::json DB::all_runs_json() {
     return arr;
 }
 
+nlohmann::json DB::rule_results_for_run(int run_id) {
+    nlohmann::json arr = nlohmann::json::array();
+    const char* q = "SELECT rule_id, passed, weight FROM rule_results WHERE run_id = ? ORDER BY rule_id;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(p->db, q, -1, &stmt, nullptr) != SQLITE_OK) {
+        throw std::runtime_error("sqlite prepare rule_results_for_run");
+    }
+    sqlite3_bind_int(stmt, 1, run_id);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const unsigned char* rule_id = sqlite3_column_text(stmt, 0);
+        nlohmann::json j;
+        j["rule_id"] = rule_id ? reinterpret_cast<const char*>(rule_id) : "";
+        j["passed"] = sqlite3_column_int(stmt, 1) != 0;
+        j["weight"] = sqlite3_column_int(stmt, 2);
+        arr.push_back(j);
+    }
+    sqlite3_finalize(stmt);
+    return arr;
+}
+
 int DB::get_last_run_id() {
-    return static_cast<int>(sqlite3_last_insert_rowid(p->db));
+    // Cached by persist_run() at the moment runs.id is actually known, not
+    // re-derived from connection-wide state here. See Impl::last_run_id.
+    return static_cast<int>(p->last_run_id);
 }
 
 bool DB::enqueue_report(int run_id,

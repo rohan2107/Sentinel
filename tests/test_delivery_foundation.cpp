@@ -3,9 +3,11 @@
 #include <iostream>
 #include <chrono>
 #include <iomanip>
+#include <map>
 #include <sstream>
 #include <string>
 #include <nlohmann/json.hpp>
+#include <sqlite3.h>
 #include "src/db.h"
 #include "src/report_hasher.h"
 #include "src/delivery_client.h"
@@ -442,6 +444,190 @@ void test_posture_suppression() {
     remove_db(test_db);
 }
 
+void test_rule_results() {
+    std::cout << "=== Testing Per-Rule Results (replaces the old features table) ===\n";
+
+    const char* test_db = "rule_results_test.db";
+    remove_db(test_db);
+    DB db(test_db);
+    db.init_schema();
+
+    // Deliberately not firewall_enabled/av_installed: the old features table
+    // hardcoded those two names as SQL columns, so it silently dropped every
+    // other rule. These names must round-trip with no special casing.
+    json run1_report = {
+        {"timestamp", "2026-09-17T10:00:00.000Z"},
+        {"hostname", "test-host"},
+        {"policy", "macos-baseline"},
+        {"score", 55},
+        {"details", {{"filevault_encrypted", true}, {"sip_enabled", false}}},
+    };
+    json run1_results = json::array({
+        {{"rule_id", "filevault_encrypted"}, {"passed", true}, {"weight", 30}},
+        {{"rule_id", "sip_enabled"}, {"passed", false}, {"weight", 20}},
+    });
+
+    db.persist_run(run1_report.at("timestamp").get<std::string>(),
+                   run1_report.at("hostname").get<std::string>(),
+                   run1_report.at("policy").get<std::string>(),
+                   run1_report.at("score").get<int>(),
+                   run1_report.at("details"),
+                   run1_results);
+
+    // This is the exact regression this test exists to catch: persist_run now
+    // inserts multiple rows into rule_results (a table with a composite
+    // primary key, not rowid-aliased) *after* inserting into runs. An earlier
+    // version of this change re-derived get_last_run_id() from
+    // sqlite3_last_insert_rowid() after persist_run returned, which then
+    // reported the rule_results table's own internal rowid counter (2, for
+    // these two rows) instead of the actual runs.id (1). It was masked in
+    // test_posture_suppression() above because that test's calls all pass an
+    // empty rule_results and so never exercise the insert loop at all.
+    const int run1_id = db.get_last_run_id();
+    SENTINEL_ASSERT(run1_id == 1);
+    std::cout << "[PASS] get_last_run_id() is correct after rule_results inserts\n";
+
+    json stored1 = db.rule_results_for_run(run1_id);
+    SENTINEL_ASSERT(stored1.size() == 2);
+    std::map<std::string, json> by_id1;
+    for (const auto& r : stored1) by_id1[r.at("rule_id").get<std::string>()] = r;
+
+    SENTINEL_ASSERT(by_id1.count("filevault_encrypted") == 1);
+    SENTINEL_ASSERT(by_id1["filevault_encrypted"].at("passed").get<bool>() == true);
+    SENTINEL_ASSERT(by_id1["filevault_encrypted"].at("weight").get<int>() == 30);
+    SENTINEL_ASSERT(by_id1.count("sip_enabled") == 1);
+    SENTINEL_ASSERT(by_id1["sip_enabled"].at("passed").get<bool>() == false);
+    SENTINEL_ASSERT(by_id1["sip_enabled"].at("weight").get<int>() == 20);
+    std::cout << "[PASS] Rule ids, pass/fail and weight round-trip with no hardcoded names\n";
+
+    // A second run with an entirely different rule set (as a different
+    // platform's policy would produce) needs no schema change and must not
+    // disturb the first run's rows.
+    json run2_report = {
+        {"timestamp", "2026-09-17T11:00:00.000Z"},
+        {"hostname", "test-host-2"},
+        {"policy", "windows-baseline"},
+        {"score", 80},
+        {"details", {{"security_center_status", true}}},
+    };
+    json run2_results = json::array({
+        {{"rule_id", "security_center_status"}, {"passed", true}, {"weight", 20}},
+    });
+
+    db.persist_run(run2_report.at("timestamp").get<std::string>(),
+                   run2_report.at("hostname").get<std::string>(),
+                   run2_report.at("policy").get<std::string>(),
+                   run2_report.at("score").get<int>(),
+                   run2_report.at("details"),
+                   run2_results);
+
+    const int run2_id = db.get_last_run_id();
+    SENTINEL_ASSERT(run2_id == 2);
+    std::cout << "[PASS] run id increments correctly across persist_run calls\n";
+
+    json stored2 = db.rule_results_for_run(run2_id);
+    SENTINEL_ASSERT(stored2.size() == 1);
+    SENTINEL_ASSERT(stored2[0].at("rule_id").get<std::string>() == "security_center_status");
+
+    // Run 1's rows must be untouched by run 2 -- different rule set entirely,
+    // and rule_results is keyed on (run_id, rule_id) so there is no overlap.
+    json stored1_again = db.rule_results_for_run(run1_id);
+    SENTINEL_ASSERT(stored1_again.size() == 2);
+    std::cout << "[PASS] Runs with entirely different rule sets do not interfere\n";
+
+    // Calling persist_run with no rule_results (the default parameter) must
+    // still work and simply insert nothing -- covers every existing caller in
+    // this file that predates rule_results and never mentions it.
+    db.persist_run("2026-09-17T12:00:00.000Z", "test-host-3", "p", 100, json::object());
+    const int run3_id = db.get_last_run_id();
+    SENTINEL_ASSERT(run3_id == 3);
+    SENTINEL_ASSERT(db.rule_results_for_run(run3_id).empty());
+    std::cout << "[PASS] Default (empty) rule_results is a no-op, not an error\n";
+
+    std::cout << "\n";
+    remove_db(test_db);
+}
+
+void test_features_table_dropped() {
+    std::cout << "=== Testing features Table Migration ===\n";
+
+    const char* test_db = "features_migration_test.db";
+    remove_db(test_db);
+
+    // Hand-build a database in the shape the agent produced before this
+    // change, i.e. with the old hardcoded features table already populated,
+    // to prove init_schema() removes it on an existing database and not just
+    // omits it from a fresh one.
+    {
+        sqlite3* raw = nullptr;
+        SENTINEL_ASSERT(sqlite3_open(test_db, &raw) == SQLITE_OK);
+        const char* legacy_schema = R"sql(
+            CREATE TABLE runs (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              ts TEXT NOT NULL, hostname TEXT, policy TEXT, score INTEGER, details_json TEXT
+            );
+            CREATE TABLE features (
+              run_id INTEGER PRIMARY KEY,
+              firewall_enabled INTEGER,
+              av_installed INTEGER,
+              FOREIGN KEY(run_id) REFERENCES runs(id)
+            );
+            INSERT INTO runs (ts, hostname, policy, score, details_json)
+              VALUES ('2026-01-01T00:00:00.000Z', 'legacy-host', 'old-policy', 55, '{}');
+            INSERT INTO features (run_id, firewall_enabled, av_installed) VALUES (1, 1, 0);
+        )sql";
+        char* errmsg = nullptr;
+        SENTINEL_ASSERT(sqlite3_exec(raw, legacy_schema, nullptr, nullptr, &errmsg) == SQLITE_OK);
+        sqlite3_close(raw);
+    }
+    std::cout << "[PASS] Legacy database built with a populated features table\n";
+
+    // init_schema() on the existing file must drop features, leave runs
+    // alone, and add rule_results -- without erroring on the legacy row.
+    {
+        DB db(test_db);
+        db.init_schema();
+    }
+
+    sqlite3* check = nullptr;
+    SENTINEL_ASSERT(sqlite3_open(test_db, &check) == SQLITE_OK);
+
+    auto table_exists = [&check](const char* name) {
+        sqlite3_stmt* stmt = nullptr;
+        sqlite3_prepare_v2(check, "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?;", -1, &stmt, nullptr);
+        sqlite3_bind_text(stmt, 1, name, -1, SQLITE_STATIC);
+        bool found = sqlite3_step(stmt) == SQLITE_ROW;
+        sqlite3_finalize(stmt);
+        return found;
+    };
+
+    SENTINEL_ASSERT(!table_exists("features"));
+    std::cout << "[PASS] features table dropped from a pre-existing database\n";
+    SENTINEL_ASSERT(table_exists("rule_results"));
+    std::cout << "[PASS] rule_results table created alongside the drop\n";
+    SENTINEL_ASSERT(table_exists("runs"));
+
+    sqlite3_stmt* stmt = nullptr;
+    sqlite3_prepare_v2(check, "SELECT ts, hostname, policy, score FROM runs WHERE id = 1;", -1, &stmt, nullptr);
+    SENTINEL_ASSERT(sqlite3_step(stmt) == SQLITE_ROW);
+    SENTINEL_ASSERT(std::string(reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1))) == "legacy-host");
+    SENTINEL_ASSERT(sqlite3_column_int(stmt, 3) == 55);
+    sqlite3_finalize(stmt);
+    std::cout << "[PASS] Pre-existing runs row survives the migration untouched\n";
+
+    // Migration must be idempotent -- a second init_schema() call (e.g. the
+    // next agent startup) must not error now that features is already gone.
+    {
+        DB db(test_db);
+        db.init_schema();
+    }
+    std::cout << "[PASS] Second init_schema() call is a no-op, not an error\n";
+
+    sqlite3_close(check);
+    std::cout << "\n";
+    remove_db(test_db);
+}
+
 int main() {
     std::cout << "\n";
     std::cout << "===================================================\n";
@@ -453,6 +639,8 @@ int main() {
         test_mock_delivery();
         test_retry_queue();
         test_posture_suppression();
+        test_rule_results();
+        test_features_table_dropped();
         test_retry_queue_manager();
         test_integration();
         
@@ -469,6 +657,9 @@ int main() {
         std::cout << "  - Posture hash excludes timestamp and hostname\n";
         std::cout << "  - Unchanged posture suppresses delivery\n";
         std::cout << "  - Flapping and failed deliveries are re-reported\n";
+        std::cout << "  - Per-rule results replace the old hardcoded features table\n";
+        std::cout << "  - get_last_run_id() is correct after multiple inserts in one run\n";
+        std::cout << "  - features table is dropped from pre-existing databases\n";
         std::cout << "  - Dynamic timestamp handling prevents test decay\n";
         std::cout << "  - End-to-end integration verified\n";
         std::cout << "  - Ready for production HTTP delivery\n\n";
@@ -479,7 +670,7 @@ int main() {
     
     // Final cleanup: remove any leftover test databases
     const char* test_dbs[] = {"test_sentinel.db", "retry_queue_test.db", "integration_test.db",
-                               "posture_test.db"};
+                               "posture_test.db", "rule_results_test.db", "features_migration_test.db"};
     for (const char* db_name : test_dbs) {
         remove_db(db_name);
     }

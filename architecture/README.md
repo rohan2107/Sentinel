@@ -26,7 +26,7 @@ flowchart LR
     LUA --> SCORE["scoring<br/>base_score −<br/>failed weights"]
 
     SCORE --> REP[("reports/<br/>latest_report.json")]
-    SCORE --> SQL[("sentinel_data.sqlite3<br/>runs · features<br/>retry_queue")]
+    SCORE --> SQL[("sentinel_data.sqlite3<br/>runs · rule_results<br/>retry_queue")]
     SCORE --> HASH["report_hasher<br/>event hash +<br/>posture hash"]
 
     HASH --> SUPP{"posture<br/>changed?"}
@@ -66,7 +66,7 @@ Order matters here and differs from what you might assume:
 5. Assemble the report and print it to stdout.
 7. **Write `reports/latest_report.json`** — this happens *before* the database
    write, so a report file can exist for a run that was never persisted.
-7. Persist to SQLite: `runs` + `features` in one `BEGIN IMMEDIATE`/`COMMIT`.
+7. Persist to SQLite: `runs` + `rule_results` in one `BEGIN IMMEDIATE`/`COMMIT`.
 8. If delivery is enabled, decide whether to report at all (below), then enqueue
    and attempt immediate delivery.
 
@@ -215,10 +215,12 @@ CREATE TABLE runs (                    -- one row per evaluation, always written
   details_json TEXT                    -- {rule_id: bool}
 );
 
-CREATE TABLE features (                -- flattened for future ML use
-  run_id INTEGER PRIMARY KEY,
-  firewall_enabled INTEGER,            -- hardcoded columns: rule ids
-  av_installed INTEGER,                -- must match these names to populate
+CREATE TABLE rule_results (             -- one row per (run, rule); not one column
+  run_id INTEGER NOT NULL,             -- per rule name, so any policy on any
+  rule_id TEXT NOT NULL,               -- platform needs no schema change to
+  passed INTEGER NOT NULL,             -- introduce a new rule id
+  weight INTEGER NOT NULL,             -- weight as applied to this run
+  PRIMARY KEY (run_id, rule_id),
   FOREIGN KEY(run_id) REFERENCES runs(id)
 );
 
@@ -240,11 +242,18 @@ CREATE TABLE retry_queue (             -- one row per report committed for deliv
 
 Two things to know about this schema:
 
-**`features` is hardcoded.** Its columns are literally `firewall_enabled` and
-`av_installed`, so a policy only populates them if its rule ids use those exact
-names. This is why the macOS policy reuses those two ids for its firewall and
-Gatekeeper rules. Any other rule id is recorded in `runs.details_json` but not
-in `features`.
+**`rule_results` replaced an earlier `features` table** that hardcoded
+`firewall_enabled`/`av_installed` as literal SQL columns, populated only when a
+policy's rule ids happened to match those exact names -- silently dropping
+every other rule's outcome, and assuming rule ids are shared across platforms
+when policies are actually per-device (`policies/macos_policy.json` and
+`policies/sample_policy.json` share only two of their combined seven rule ids
+by convention, not by any enforced contract). `rule_results` needs no schema
+change when any future policy on any platform introduces a new rule id; the
+full outcomes map is also still recorded in `runs.details_json`, unchanged.
+`weight` is captured at evaluation time, from the policy as it was actually
+applied to that run, not looked up later from a policy file that may since
+have changed.
 
 **Foreign keys are declared but not enforced.** SQLite defaults
 `foreign_keys=OFF` and the agent only sets `journal_mode=WAL`, so these
@@ -252,8 +261,13 @@ constraints currently document intent rather than enforcing it.
 
 Schema changes are applied additively: `CREATE TABLE IF NOT EXISTS`, plus a
 guarded `ALTER TABLE ... ADD COLUMN` for `posture_hash` that checks
-`PRAGMA table_info` first so it is idempotent. There is no versioned migration
-framework yet.
+`PRAGMA table_info` first so it is idempotent. The one deliberate exception is
+the old `features` table, which `init_schema()` now drops unconditionally on
+every startup (`DROP TABLE IF EXISTS`, which never errors on a database that
+never had it): it did not just go unused, it actively returned wrong data for
+any rule outside its two hardcoded columns, so wrong-and-present was judged
+worse than dropped, with nothing else reading it to migrate forward. There is
+no versioned migration framework yet.
 
 ---
 

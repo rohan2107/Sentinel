@@ -38,10 +38,12 @@ CREATE TABLE runs (
   details_json TEXT
 );
 
-CREATE TABLE features (
-  run_id INTEGER PRIMARY KEY,
-  firewall_enabled INTEGER,
-  av_installed INTEGER,
+CREATE TABLE rule_results (
+  run_id INTEGER NOT NULL,
+  rule_id TEXT NOT NULL,
+  passed INTEGER NOT NULL,
+  weight INTEGER NOT NULL,
+  PRIMARY KEY (run_id, rule_id),
   FOREIGN KEY(run_id) REFERENCES runs(id)
 );
 
@@ -401,7 +403,7 @@ graph LR
     A --> RQ[RetryQueue<br/>Exp. Backoff]
     
     F --> G[runs table]
-    F --> H[features table]
+    F --> H[rule_results table]
     F --> J[retry_queue table<br/>PENDING/DELIVERED/FAILED]
     
     RQ --> K[DeliveryClient<br/>Interface]
