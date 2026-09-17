@@ -5,7 +5,8 @@
 
 struct QueuedReport {
     int run_id;
-    std::string report_hash;
+    std::string report_hash;   // event hash: whole report, timestamp included
+    std::string posture_hash;  // posture only: policy/score/details
     std::string report_json;
     int attempts;
     std::string state;  // PENDING, DELIVERED, FAILED
@@ -36,8 +37,24 @@ struct DB {
 
     // --- Retry Queue Operations ---
     
-    // enqueue a report for delivery
-    void enqueue_report(int run_id, const std::string& report_json, const std::string& report_hash);
+    // Enqueue a report for delivery.
+    //
+    // Idempotent: returns true if a new row was inserted, false if this
+    // report_hash was already queued. A duplicate is an expected, benign
+    // condition in an at-least-once system, not an error, so it does not throw.
+    bool enqueue_report(int run_id,
+                        const std::string& report_json,
+                        const std::string& report_hash,
+                        const std::string& posture_hash);
+
+    // Posture hash of the most recently reported run, or "" if nothing has been
+    // reported yet.
+    //
+    // FAILED entries are excluded deliberately. A report whose delivery was
+    // permanently abandoned was never actually reported, so it must not suppress
+    // the next attempt: excluding it here means the next evaluation re-reports
+    // that posture automatically, with no reset bookkeeping anywhere.
+    std::string last_reported_posture_hash();
 
     // load all pending reports (PENDING state, next_retry_at <= now or empty)
     std::vector<QueuedReport> load_pending_reports();

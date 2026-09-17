@@ -1,5 +1,6 @@
 # Build and compilation artifacts
 /build/ 
+/build-debug/
 *.exe 
 *.pdb 
 *.ilk
@@ -14,7 +15,12 @@
 
 # Databases and runtime files
 *.sqlite3 
+# SQLite WAL mode always writes these two sidecar files alongside the db.
+*.sqlite3-wal
+*.sqlite3-shm
 *.db
+*.db-wal
+*.db-shm
 /reports/ 
 
 # macOS

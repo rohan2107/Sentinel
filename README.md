@@ -16,8 +16,14 @@ Currently built and working:
 
 - **Deterministic Policy Evaluation**: osquery data collection + Lua rule engine + weighted scoring
 - **Crash-Safe Persistence**: SQLite with WAL mode, atomic transactions
-- **Sandboxed Rule Execution**: Lua runtime with timeout enforcement (1s), no I/O access
-- **Resource Bounds**: osquery timeout (10s), memory limits, 1MB output cap
+- **Restricted Rule Execution**: Lua 5.4 with only `base`, `table`, `string` and
+  `math` opened, so there is no file, process or network access. Note this is a
+  restricted library surface, **not** a CPU bound and not a security boundary —
+  there is currently no Lua timeout, so policy authorship must be trusted
+- **Resource Bounds**: osquery 10s wall time (enforced on Windows; best-effort on
+  POSIX) and a 1MB output cap. See
+  [architecture/README.md](architecture/README.md#resource-bounds) for exactly
+  what is and is not enforced
 - **Structured Reporting**: JSON output with ISO-8601 timestamps, hostname detection
 - **Clean Architecture**: Separation between data collection, rule evaluation, scoring, persistence
 
@@ -42,7 +48,8 @@ CREATE TABLE features (
 -- Phase 2: Delivery layer
 CREATE TABLE retry_queue (
   run_id INTEGER PRIMARY KEY,
-  report_hash TEXT UNIQUE NOT NULL,
+  report_hash TEXT UNIQUE NOT NULL,  -- event hash: whole report, incl. timestamp
+  posture_hash TEXT,                 -- posture only: policy/score/details
   report_json TEXT NOT NULL,
   attempts INTEGER DEFAULT 0,
   state TEXT NOT NULL CHECK (state IN ('PENDING', 'DELIVERED', 'FAILED')),
@@ -60,6 +67,9 @@ CREATE TABLE retry_queue (
 **HTTP Delivery Implementation** ✅ **PRODUCTION-READY**
 - ✅ Retry queue database schema (3-state: PENDING/DELIVERED/FAILED)
 - ✅ SHA-256 content hashing (standalone implementation, no OpenSSL)
+- ✅ State-change-triggered reporting: two hashes, `posture_hash` (policy, score,
+  details) decides whether to report at all, `report_hash` (whole report,
+  timestamp included) identifies the specific report on the wire
 - ✅ DeliveryClient interface with abstract base class
 - ✅ MockDeliveryClient for testing
 - ✅ HttpDeliveryClient with cpp-httplib (header-only)
@@ -119,8 +129,10 @@ Policies define security rules using osquery for data collection and Lua for eva
 
 1. **Load Policy**: Parse JSON policy file, validate schema
 2. **Collect Data**: Execute osquery with 10s timeout
-3. **Evaluate Rules**: Run Lua code in sandboxed environment (1s timeout)
-4. **Compute Score**: Weighted sum of passing rules
+3. **Evaluate Rules**: Run Lua code with a restricted library surface (no
+   timeout — see [known gaps](architecture/README.md#known-gaps))
+4. **Compute Score**: `base_score` minus the weight of each failed rule,
+   clamped to 0-100
 5. **Persist**: Atomic SQLite transaction (WAL mode)
 6. **Report**: Write JSON to `reports/latest_report.json`
 
@@ -146,10 +158,17 @@ Policies define security rules using osquery for data collection and Lua for eva
 
 - ✅ **Deterministic Evaluation**: Same policy + same system state = same score
 - ✅ **Crash-Safe Persistence**: SQLite WAL ensures committed data survives crashes  
-- ✅ **Sandboxed Execution**: Lua runtime has no file/network I/O, enforced timeouts
-- ✅ **Resource Bounds**: CPU/memory/disk usage limited by timeouts and output caps
+- ✅ **Restricted Execution**: Lua runtime has no file, process or network access
+  (those libraries are never opened)
+- ⚠️ **Resource Bounds**: osquery wall time and output size are capped; Lua CPU
+  time is **not** bounded. See
+  [architecture/README.md](architecture/README.md#known-gaps)
 - ✅ **Offline Operation**: Agent works without network (local evaluation only)
-- ✅ **Content Hashing**: SHA-256 hashing for report deduplication (standalone implementation)
+- ✅ **Content Hashing**: SHA-256 over canonical JSON, byte-identical across the
+  C++ agent, Python backend and Go aggregator (verified by a differential test)
+- ✅ **State-Change-Triggered Reporting**: an evaluation whose posture matches the
+  last reported posture is not sent. Local evaluation and persistence still
+  happen on every run; only delivery is suppressed
 - ✅ **Delivery Queue Schema**: Durable retry_queue with 3-state machine
 - ✅ **Idempotent Deduplication**: UNIQUE constraint on report_hash prevents duplicates
 - ✅ **At-Least-Once Delivery**: HTTP delivery with exponential backoff (1s → 300s)
@@ -166,98 +185,154 @@ Policies define security rules using osquery for data collection and Lua for eva
 
 ## Quick Start
 
+### Platform Support
+
+| Platform | Build | Agent runs | CI | Policy |
+|----------|-------|-----------|----|--------|
+| macOS (Apple Silicon / Intel) | Homebrew + CMake | Yes | [`macos-build.yml`](.github/workflows/macos-build.yml) — every push/PR | [`policies/macos_policy.json`](policies/macos_policy.json) |
+| Windows (x64) | vcpkg + MSBuild | Yes | [`windows-build.yml`](.github/workflows/windows-build.yml) — every push/PR | [`policies/sample_policy.json`](policies/sample_policy.json) |
+| Linux | Homebrew/apt + CMake | Untested | None | — |
+
+Presets exist for Linux and the agent source is POSIX-clean, but it has not been
+built or run there, so it is listed as untested rather than supported.
+
+Both supported platforms build on every push and PR to `master`, not just
+when someone remembers to check. The agent genuinely is cross-platform — only
+about 10% of its source sits inside `#ifdef _WIN32`, almost entirely in
+`osquery_runner.cpp`'s process-spawning code, which necessarily differs by
+OS — and continuous CI on both is what turns that from an intention into a
+verified claim. Active development is macOS-only, which means Windows CI is
+the only thing that would catch a POSIX-only regression introduced from that
+work before it ships. See
+[architecture/README.md](architecture/README.md#platform-and-dependencies).
+
+Policies are **not** portable across platforms: each rule carries an osquery
+query, and the tables differ (`windows_security_products` vs `alf`,
+`gatekeeper`, `disk_encryption`, `sip_config`). The Lua evaluation logic is
+portable; the queries are not.
+
 ### Prerequisites
 
-- **Visual Studio 2022** with C++ build tools (Windows)
+**Windows**
+
+- **Visual Studio 2022** with C++ build tools
 - **[vcpkg](https://github.com/microsoft/vcpkg)** with packages:
   ```
   vcpkg install nlohmann-json spdlog sol2 lua sqlite3
   ```
-- **[osquery](https://osquery.io/downloads/official)** installed and `osqueryi.exe` in `PATH`
+- **[osquery](https://osquery.io/downloads/official)** with `osqueryi.exe` in `PATH`
 
-**Optional Tools:**
-- **sqlite3 CLI** (for manual database inspection): `winget install SQLite.SQLite`
-  - Not required for building or testing
-  - Tests validate schema automatically
+**macOS**
+
+```bash
+brew install cmake lua@5.4 spdlog nlohmann-json sol2 cpp-httplib
+brew install --cask osquery   # requires admin rights (installs a .pkg)
+```
+
+`lua@5.4` is keg-only and deprecated in Homebrew, but it is deliberate: vcpkg
+provides Lua 5.4 on Windows, and policy rules are Lua source shipped as data, so
+the two platforms must agree on the language version. CMake runs an ABI probe at
+configure time and fails the build if the Lua headers and the linked library
+disagree — see the note in [`CMakeLists.txt`](CMakeLists.txt) for why that check
+exists.
+
+osquery is a **runtime** dependency, not a build one. Without it the agent still
+builds, runs, and persists, but every rule fails data collection and the score
+reads 0 for that reason rather than because the host is misconfigured. Both test
+suites are osquery-independent.
 
 ### Build
 
-**PowerShell 7** (recommended):
+**Windows** (PowerShell 7):
 ```powershell
 .\scripts\build.ps1 -Config Debug
 ```
 
-**Command Prompt**:
-```bat
-scripts\build.bat
+**macOS / Linux**:
+```bash
+./scripts/build.sh                    # Release (default) -> build/
+./scripts/build.sh --config Debug     # Debug           -> build-debug/
 ```
+
+Or drive CMake directly:
+```bash
+cmake --preset macos-release
+cmake --build --preset macos-release
+```
+
+The shell scripts default to Release where `build.ps1` defaults to Debug:
+Release is what CI validates and it lands in `build/`, the path the run scripts
+use. Single-config generators cannot share one build directory between
+configurations the way the Visual Studio generator does, hence the separate
+`build-debug/`.
 
 ### Run
 
-**PowerShell 7**:
+**Windows** (PowerShell 7):
 ```powershell
 .\scripts\run.ps1 -Policy policies\sample_policy.json
 ```
 
-**Command Prompt**:
-```bat
-scripts\run.bat policies\sample_policy.json
+**macOS / Linux**:
+```bash
+./scripts/run.sh                                        # picks the host's policy
+./scripts/run.sh --policy policies/macos_policy.json
+./scripts/run.sh -- --enable-delivery --backend-url http://localhost:8000
 ```
+
+Arguments after `--` are forwarded to the agent.
 
 ### Smoketest
 
+**Windows**:
 ```powershell
 .\scripts\smoketest.ps1
 ```
 
-Validates: Build succeeds, execution completes, report generated, database persisted.
+**macOS / Linux**:
+```bash
+./scripts/smoketest.sh
+```
+
+Validates: build succeeds, execution completes, report generated, database
+persisted, retry-queue state readable.
 
 ---
 
 ## Testing & CI
 
-### Quick Validation (5 minutes)
+### Before committing
 
-Before committing, run the three core checks:
-
-```powershell
-.\scripts\build.ps1   # Clean build
-.\scripts\test.ps1    # Integration tests
-.\scripts\run.ps1     # Phase 1 backward compatibility
+```bash
+./scripts/test.sh --config Both      # macOS / Linux
+.\scripts\test.ps1                   # Windows
 ```
 
-**See:** [docs/QUICK_TEST.md](docs/QUICK_TEST.md) for quick reference.
-
-### Comprehensive Pre-Commit Testing (10-15 minutes)
-
-Before merging to master, run full validation including:
-- Build integrity (Debug + Release)
-- Edge case testing
-- CLI argument variations
-- Database schema verification
-
-**See:** [docs/PRE_COMMIT_TESTING.md](docs/PRE_COMMIT_TESTING.md) for complete checklist.
+That mirrors what CI runs: build both configurations, both test binaries, policy
+JSON validation, the canonicalization differential test, and the backend syntax
+check.
 
 ### Integration Tests
 
-Run delivery foundation integration tests:
-
-**PowerShell 7**:
+**Windows** (PowerShell 7):
 ```powershell
 .\scripts\test.ps1
 ```
 
-**Command Prompt**:
-```bat
-scripts\test.bat
+**macOS / Linux**:
+```bash
+./scripts/test.sh                  # Release
+./scripts/test.sh --config Both    # Debug and Release
 ```
 
-**Or directly**:
-```powershell
-.\build\Debug\test_delivery_foundation.exe
+**Or via ctest**:
+```bash
+ctest --preset macos-release
 ```
 
-**Tests cover:**
+There are two test binaries, both of which run without osquery:
+
+`test_delivery_foundation` — durable delivery:
 - SHA-256 hash determinism (sorted JSON keys)
 - MockDeliveryClient success/failure modes
 - Retry queue operations (enqueue, load, mark delivered/failed)
@@ -265,14 +340,51 @@ scripts\test.bat
 - Dynamic timestamp handling (prevents test decay)
 - End-to-end flow (persist → hash → enqueue → deliver)
 
+`test_lua_evaluator` — the sandboxed rule engine:
+- Each rule in `policies/macos_policy.json` driven against synthetic osquery
+  rows, asserting both its pass and its fail path
+- Empty result sets (a failed or empty osquery query must not pass a rule)
+- JSON `null` column values, which exercise the `sol::lua_nil` path
+
+The Lua suite is cross-platform despite using the macOS policy file: the policy
+is data, and its Lua snippets evaluate identically wherever the agent is built.
+It feeds rows directly to the evaluator rather than invoking osquery, so it
+tests rule logic in isolation from data collection.
+
+### Canonicalization Differential Test
+
+The report hash is a wire-format contract between three independently written
+JSON encoders: the C++ agent produces the hash, and both the Python backend and
+the Go aggregator recompute it to verify. They do **not** agree by default -
+they differ on non-ASCII escaping, HTML escaping and number formatting - and a
+disagreement does not fail loudly, it makes every affected report return
+`400 hash mismatch` indefinitely.
+
+```bash
+cmake --build --preset macos-release --target canon_dump
+python3 tests/canonicalization/compare.py
+```
+
+Each emitter calls its project's real canonicalizer, not a copy. Runs in the
+macOS CI job, the only one with all three toolchains. See
+[tests/canonicalization/README.md](tests/canonicalization/README.md) for the
+contract, the two documented cases that lie outside it, and why.
+
 ### Continuous Integration
 
-GitHub Actions workflow runs on every push/PR to master:
-- ✅ Build (Release + Debug)
-- ✅ Run integration tests
-- ✅ Upload build artifacts
+| Workflow | Runner | Trigger | Covers |
+|----------|--------|---------|--------|
+| [`macos-build.yml`](.github/workflows/macos-build.yml) | `macos-latest` | every push/PR | Homebrew build, ctest, the canonicalization differential test, agent start-up check, artifact upload |
+| [`windows-build.yml`](.github/workflows/windows-build.yml) | `windows-latest` | every push/PR | vcpkg build, both test binaries, artifact upload |
+| [`validate-backend.yml`](.github/workflows/validate-backend.yml) | `ubuntu-latest` | every push/PR touching `backend/` or `policies/` | backend syntax check **and import check** (imports `server.py`, so a FastAPI startup error is caught — syntax-only checking missed exactly this bug once), policy JSON validation |
+| [`go-aggregator.yml`](.github/workflows/go-aggregator.yml) | `ubuntu-latest` | every push/PR touching `go-aggregator/` | build, vet, `go test -race`, golangci-lint, govulncheck |
 
-See [`.github/workflows/windows-build.yml`](.github/workflows/windows-build.yml) for details.
+`validate-backend` used to be a second job inside `windows-build.yml`, despite
+having nothing to do with Windows — a coupling that would have mattered a lot
+if Windows CI had gone manual-only, which it briefly did before reverting
+back to always-on below. Kept split out regardless: it is better hygiene for
+each workflow to own one concern, matching how the other three are already
+separated by platform/component rather than bundled.
 
 ---
 
@@ -282,7 +394,7 @@ See [`.github/workflows/windows-build.yml`](.github/workflows/windows-build.yml)
 graph LR
     A[main.cpp] --> B[Policy Validator]
     A --> C[osquery Runner<br/>10s timeout]
-    A --> D[Lua Evaluator<br/>1s timeout]
+    A --> D[Lua Evaluator<br/>restricted libs, no timeout]
     A --> E[Scoring Engine]
     A --> F[(SQLite + WAL)]
     A --> I[JSON Report Writer]
@@ -352,38 +464,39 @@ Sentinel/
 │   ├── lua_evaluator.cpp         # Sandboxed Lua runtime
 │   ├── scoring.cpp               # Weighted score computation
 │   ├── db.cpp                    # SQLite persistence (WAL mode)
-│   ├── json_to_lua.cpp           # JSON-Lua conversion
 │   ├── report_hasher.cpp         # SHA-256 content hashing
 │   ├── delivery_client.cpp       # DeliveryClient interface + MockDeliveryClient
 │   ├── http_delivery_client.cpp  # HTTP POST delivery (cpp-httplib)
 │   └── retry_queue.cpp           # Retry manager with exponential backoff
 ├── backend/
 │   ├── server.py                 # FastAPI backend with hash deduplication
+│   ├── canonical.py              # Canonical JSON + hash (stdlib only, no app deps)
 │   ├── requirements.txt          # Python dependencies
 │   └── README.md                 # Backend API documentation
 ├── policies/
-│   └── sample_policy.json        # Example Windows security policy
+│   ├── sample_policy.json        # Windows baseline (windows_security_products/_center)
+│   └── macos_policy.json         # macOS baseline (alf, gatekeeper, disk_encryption, sip_config)
 ├── architecture/
 │   └── README.md                 # System architecture documentation
 ├── docs/
-│   ├── trade-offs.md             # Architectural decisions and alternatives
-│   ├── DELIVERY_QUICKSTART.md    # Delivery layer usage guide
-│   ├── IMPLEMENTATION_SUMMARY.md # Delivery implementation details
-│   └── roadmap/                  # Design documents
-│       ├── IMPLEMENTATION_PLAN.md
-│       ├── CODE_MODULES.md
-│       ├── delivery-state-machine.md
-│       ├── failure-scenarios.md
-│       └── delivery-guarantees.md
-├── test_delivery_foundation.cpp  # Integration tests
+│   ├── trade-offs.md             # Decision matrix with failure thresholds
+│   └── ROADMAP.md                # Short- and long-term plan
+├── test_delivery_foundation.cpp  # Delivery integration tests
+├── test_lua_evaluator.cpp        # Rule engine tests (no osquery required)
+├── tests/
+│   └── canonicalization/         # Cross-language report-hash contract test
+│       ├── fixtures.json         # Shared fixtures, single source of truth
+│       ├── canon_dump.cpp/.py    # C++ and Python emitters
+│       ├── compare.py            # Driver: runs all three, diffs them
+│       └── golden.json           # Pinned hashes, catches coordinated drift
 ├── reports/
 │   └── latest_report.json        # Last evaluation result
 ├── sentinel_data.sqlite3         # Local database
 └── scripts/
-    ├── build.ps1 / build.bat
-    ├── run.ps1 / run.bat
-    ├── test.ps1 / test.bat
-    └── smoketest.ps1 / smoketest.bat
+    ├── build.ps1 / build.sh
+    ├── run.ps1 / run.sh
+    ├── test.ps1 / test.sh
+    └── smoketest.ps1 / smoketest.sh
 ```
 
 ---
@@ -412,21 +525,15 @@ Sentinel/
 
 ## Documentation
 
-| Document | Status | Description |
-|----------|--------|-------------|
-| **[README.md](README.md)** | ✅ Current | Project overview and quick start |
-| **[architecture/README.md](architecture/README.md)** | ✅ Current | Detailed system architecture |
-| **[docs/trade-offs.md](docs/trade-offs.md)** | ✅ Current | Architectural decisions and alternatives |
-| **[docs/QUICK_TEST.md](docs/QUICK_TEST.md)** | ✅ Current | 5-minute pre-commit testing guide |
-| **[docs/PRE_COMMIT_TESTING.md](docs/PRE_COMMIT_TESTING.md)** | ✅ Current | Comprehensive 15-minute validation |
-| **[scripts/README.md](scripts/README.md)** | ✅ Current | Build/run/test script documentation |
-| **[docs/DELIVERY_QUICKSTART.md](docs/DELIVERY_QUICKSTART.md)** | ✅ Current | Delivery layer usage guide |
-| **[docs/IMPLEMENTATION_SUMMARY.md](docs/IMPLEMENTATION_SUMMARY.md)** | ✅ Current | Delivery implementation details |
-| **[docs/roadmap/IMPLEMENTATION_PLAN.md](docs/roadmap/IMPLEMENTATION_PLAN.md)** | ✅ Complete | Phased delivery layer implementation |
-| **[docs/roadmap/CODE_MODULES.md](docs/roadmap/CODE_MODULES.md)** | ✅ Complete | Module architecture and dependencies |
-| **[docs/roadmap/delivery-state-machine.md](docs/roadmap/delivery-state-machine.md)** | 📋 Reference | Delivery state transitions |
-| **[docs/roadmap/failure-scenarios.md](docs/roadmap/failure-scenarios.md)** | 📋 Reference | Network/crash recovery patterns |
-| **[docs/roadmap/delivery-guarantees.md](docs/roadmap/delivery-guarantees.md)** | 📋 Reference | Formal delivery specifications |
+| Document | Description |
+|----------|-------------|
+| **[README.md](README.md)** | Overview, quick start, testing |
+| **[architecture/README.md](architecture/README.md)** | How the system works, what it guarantees, and its known gaps |
+| **[docs/ROADMAP.md](docs/ROADMAP.md)** | What is next, short and long term |
+| **[docs/trade-offs.md](docs/trade-offs.md)** | Decisions, alternatives, and the thresholds where each choice fails |
+| **[tests/canonicalization/README.md](tests/canonicalization/README.md)** | The cross-language report-hash contract |
+| **[scripts/README.md](scripts/README.md)** | Build, run and test scripts |
+| **[backend/README.md](backend/README.md)** | Backend API reference |
 
 ---
 

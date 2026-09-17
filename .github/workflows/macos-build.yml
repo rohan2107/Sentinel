@@ -1,0 +1,94 @@
+name: macOS Build (CMake + Homebrew)
+
+# Separate from windows-build.yml rather than a matrix on it: the two platforms
+# resolve dependencies through entirely different package managers (vcpkg vs
+# Homebrew), so a shared job would be mostly conditionals.
+
+# go-aggregator/ is deliberately NOT ignored here: this is the only job that runs
+# the canonicalization differential test, which compares the Go encoder against
+# the C++ and Python ones. Skipping it on Go-only changes would let the Go side of
+# that contract drift unchecked.
+on:
+  push:
+    branches: [ master ]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+  pull_request:
+    branches: [ master ]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          # lua@5.4 is keg-only and deprecated in Homebrew but matches the Lua
+          # version vcpkg provides on Windows. Policy rules are Lua source
+          # shipped as data, so both platforms must agree on the language
+          # version. The CMake ABI probe fails the build if they diverge.
+          brew install cmake lua@5.4 spdlog nlohmann-json sol2 cpp-httplib
+
+      - name: Configure
+        run: cmake --preset macos-release
+
+      - name: Build
+        run: cmake --build --preset macos-release -j3
+
+      - name: Test
+        # Neither test needs osquery: the delivery suite uses a mock client and
+        # the Lua suite feeds synthetic rows straight to the evaluator. osquery
+        # is a runtime dependency of the agent, not of the test suite.
+        run: ctest --preset macos-release
+
+      - name: Set up Go
+        # Python 3 ships on the macos-latest image; Go does not, and the
+        # comment that used to be here claimed otherwise. Without this step
+        # compare.py below fails with "missing implementation: go" rather than
+        # actually comparing anything.
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go-aggregator/go.mod
+          cache: true
+          cache-dependency-path: go-aggregator/go.sum
+
+      - name: Canonicalization differential test
+        # Runs here rather than in a language-specific workflow because, once Go
+        # is set up above, this is the only job with all three toolchains: C++
+        # (built above), Python 3 (preinstalled) and Go. No --allow-missing: a
+        # two-way comparison can hide a three-way disagreement.
+        run: python3 tests/canonicalization/compare.py --cpp ./build/canon_dump
+
+      - name: Verify the agent runs
+        # Without osquery every rule fails collection and the score is 0. That
+        # is the expected outcome here; what this step checks is that the agent
+        # starts, loads and validates the policy, writes a report, and persists
+        # a row rather than crashing.
+        run: |
+          ./build/Sentinel --policy policies/macos_policy.json
+          test -f reports/latest_report.json || { echo "no report written"; exit 1; }
+          python3 -c "
+          import json, sys
+          r = json.load(open('reports/latest_report.json'))
+          for key in ('policy', 'score', 'hostname', 'timestamp'):
+              assert key in r, f'report missing {key}'
+          assert r['policy'] == 'sample-default-macos', r['policy']
+          print('report OK:', json.dumps(r))
+          "
+
+      - name: Upload build artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: sentinel-macos
+          path: |
+            build/Sentinel
+            build/test_delivery_foundation
+            build/test_lua_evaluator

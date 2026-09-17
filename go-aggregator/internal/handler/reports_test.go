@@ -2,7 +2,6 @@ package handler
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,22 +9,23 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rohan2107/sentinel/go-aggregator/internal/canonical"
 	"github.com/rohan2107/sentinel/go-aggregator/internal/dedup"
 )
 
-// reportHash computes the canonical SHA-256 hash for a JSON report string,
-// mirroring the verification logic in ServeHTTP.
+// reportHash computes the canonical SHA-256 hash for a JSON report string
+// using the same package ServeHTTP verifies with.
 func reportHash(t *testing.T, reportJSON string) string {
 	t.Helper()
 	var m map[string]any
 	if err := json.Unmarshal([]byte(reportJSON), &m); err != nil {
 		t.Fatalf("reportHash: invalid JSON: %v", err)
 	}
-	canonical, err := canonicalizeMap(m)
+	h, err := canonical.Hash(m)
 	if err != nil {
-		t.Fatalf("reportHash: canonicalizeMap failed: %v", err)
+		t.Fatalf("reportHash: canonical.Hash failed: %v", err)
 	}
-	return fmt.Sprintf("%x", sha256.Sum256(canonical))
+	return h
 }
 
 // newHandler returns a Handler with a fresh dedup cache sized for tests.

@@ -1,7 +1,9 @@
 # GitHub Copilot Instructions — Sentinel
 
 ## What This Project Is
-Security compliance agent (C++17) with a Go aggregation backend. Portfolio project demonstrating: osquery + Lua policy evaluation, SQLite retry queue with at-least-once delivery, SHA-256 content-addressable deduplication, concurrent ingestion via Go goroutines, Prometheus observability, and Docker Compose orchestration. See `docs/roadmap/IMPLEMENTATION_PLAN.md` for C++ delivery status; `docs/roadmap/EXPANSION_PLAN.md` for Phase 3+ roadmap.
+Security compliance agent (C++17) with two independent receivers. Portfolio project: osquery + Lua policy evaluation, SQLite retry queue with at-least-once delivery, state-change-triggered reporting via a posture hash, and a cross-language report-hash contract.
+
+Read [`architecture/README.md`](../architecture/README.md) before changing anything — in particular its **Known gaps** section, which lists what the code does *not* do. Do not restore claims it removed. [`docs/ROADMAP.md`](../docs/ROADMAP.md) has the plan.
 
 ---
 
@@ -24,37 +26,41 @@ Security compliance agent (C++17) with a Go aggregation backend. Portfolio proje
 
 ## Project Structure
 ```
-src/             # Core C++ implementation (main.cpp orchestrates)
-backend/         # FastAPI prototype backend (server.py) — kept for reference
-go-aggregator/   # Go aggregation service (Phase 3) — goroutines, Prometheus, SQLite
-load-sim/        # Go load simulation harness (Phase 4) — benchmark tool
-docs/roadmap/    # Phase plans with ✅/⏳/❌ status
-test_*.cpp       # Integration tests at root level
-scripts/         # PowerShell build/run/test automation
-policies/        # Sample policy JSON files
-prometheus/      # Prometheus scrape config (docker-compose)
-mosquitto/       # Mosquitto broker config (docker-compose, Phase 3.5)
-docker-compose.yml  # One-command demo: aggregator + Prometheus + Grafana (+ Mosquitto in 3.5)
+src/             # C++ agent (main.cpp orchestrates)
+backend/         # FastAPI receiver; canonical.py holds the hash contract
+go-aggregator/   # Go receiver — verifies + dedups, but does NOT store yet
+tests/           # All tests: two C++ binaries + canonicalization/
+scripts/         # build/run/test/smoketest, .ps1 and .sh
+policies/        # Per-platform policies (not portable across OSes)
+architecture/    # How it works and what it does not do
+docs/            # ROADMAP.md, trade-offs.md
 ```
+There is no `load-sim/`, `prometheus/`, `mosquitto/` or `docker-compose.yml`.
+Those are roadmap items, not current structure.
 
 ---
 
 ## Quality Gates (required before marking anything done)
 
 **C++ changes:**
-- All tests pass: `.\scripts\test.ps1`
-- Smoke test: `.\scripts\smoketest.ps1`
+- All tests pass: `.\scripts\test.ps1` (Windows) or `./scripts/test.sh --config Both`
+- Smoke test: `.\scripts\smoketest.ps1` or `./scripts/smoketest.sh`
 - Zero MSVC `/W4` warnings
-- `docs/roadmap/IMPLEMENTATION_PLAN.md` status updated
 
 **Go changes:**
 - `go build ./...` — zero errors
 - `go test ./...` — all tests pass
 - `go vet ./...` — zero warnings
 
+**Anything touching the report hash or its JSON encoding:**
+- `python3 tests/canonicalization/compare.py` passes. The C++, Python and Go
+  encoders must agree byte-for-byte or every report is rejected as a hash
+  mismatch. Review any `golden.json` change deliberately.
+
 **Any change:**
-- `README.md` updated if capabilities or structure changed
-- Relevant roadmap doc (`PHASE3_PLAN.md`, `MQTT_PLAN.md`, etc.) status updated
+- `README.md` and `architecture/README.md` updated if behaviour or structure
+  changed. Claims must match code — the docs previously asserted a Lua timeout,
+  enforced foreign keys and a scoring formula that none of the code implemented.
 
 ---
 
@@ -76,7 +82,7 @@ Persist intent before side effects. DB write → network call → DB confirm. Al
 
 ---
 
-## Go Conventions (go-aggregator/, load-sim/)
+## Go Conventions (go-aggregator/)
 
 **Naming**: Packages `lowercase`, exported types/funcs `PascalCase`, unexported `camelCase`, files `snake_case.go`
 

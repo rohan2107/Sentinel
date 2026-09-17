@@ -1,0 +1,65 @@
+name: Validate Backend
+
+# Split out of windows-build.yml: this job has nothing to do with Windows or
+# vcpkg, runs on ubuntu-latest, and is fast and reliable. It used to be
+# bundled into the Windows workflow only because of file history, which meant
+# it went dormant along with build-windows the moment that workflow became
+# manual-only. It belongs on its own, always-on trigger.
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - 'backend/**'
+      - 'policies/**'
+      - '.github/workflows/validate-backend.yml'
+  pull_request:
+    branches: [ master ]
+    paths:
+      - 'backend/**'
+      - 'policies/**'
+      - '.github/workflows/validate-backend.yml'
+
+jobs:
+  validate-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements.txt
+
+      - name: Syntax check
+        run: python -m py_compile backend/server.py backend/canonical.py
+
+      - name: Import check
+        # py_compile only parses; it does not execute module-level code, so it
+        # cannot catch an error FastAPI raises while building routes at import
+        # time. That is exactly the shape of a real bug this project shipped:
+        # an invalid response_model/return-type annotation combination that
+        # raised FastAPIError on every import, on every Python version, and
+        # py_compile passed it every time. Actually importing the module is
+        # what would have caught it.
+        working-directory: backend
+        run: python -c "import server; print('server.py imports OK:', server.app.title)"
+
+      - name: Validate policy JSON files
+        run: |
+          python -c "
+          import json, sys, pathlib
+          errors = 0
+          for p in pathlib.Path('policies').glob('*.json'):
+              try:
+                  data = json.loads(p.read_text())
+                  assert 'policy_name' in data or 'rules' in data, f'Missing policy_name or rules key'
+                  print(f'  [OK] {p}')
+              except Exception as e:
+                  print(f'  [FAIL] {p}: {e}', file=sys.stderr)
+                  errors += 1
+          sys.exit(1 if errors else 0)
+          "

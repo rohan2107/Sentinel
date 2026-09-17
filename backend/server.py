@@ -3,10 +3,13 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import sqlite3
-import hashlib
 import json
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Union
+
+# Canonicalization lives in its own module so the differential test can import
+# it without starting the app. See tests/canonicalization/README.md.
+from canonical import compute_hash
 
 app = FastAPI(title="Sentinel Backend", version="1.0.0")
 
@@ -39,16 +42,23 @@ class ReportSubmission(BaseModel):
     report: dict[str, Any]
     hash: str
 
-@app.post("/reports")
-async def receive_report(submission: ReportSubmission) -> JSONResponse | dict[str, Any]:
+# response_model=None: this handler returns either a JSONResponse (for the
+# 409 duplicate path) or a plain dict, and FastAPI cannot build a Pydantic
+# response model from that union. Without it, importing this module raises
+# FastAPIError at startup on every Python version.
+@app.post("/reports", response_model=None)
+# Union[...] rather than the PEP 604 `X | Y` form: FastAPI evaluates return
+# annotations at import time, so `|` would require Python 3.10+. macOS ships
+# 3.9 as its system interpreter, and `py_compile` in CI does not catch this
+# because the syntax is valid on 3.9 and only fails when evaluated.
+async def receive_report(submission: ReportSubmission) -> Union[JSONResponse, dict[str, Any]]:
     """
     Receive and store a compliance report.
     Returns 200 for new reports, 409 for duplicates.
     Verifies hash matches report content.
     """
     # Verify hash matches content
-    canonical = json.dumps(submission.report, sort_keys=True, separators=(',', ':'))
-    computed_hash = hashlib.sha256(canonical.encode()).hexdigest()
+    computed_hash = compute_hash(submission.report)
     
     if computed_hash != submission.hash:
         raise HTTPException(

@@ -3,14 +3,12 @@
 package handler
 
 import (
-	"bytes"
-	"crypto/sha256"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/rohan2107/sentinel/go-aggregator/internal/canonical"
 	"github.com/rohan2107/sentinel/go-aggregator/internal/dedup"
 )
 
@@ -56,9 +54,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify hash: unmarshal report into a map so encoding/json re-marshals it
-	// with sorted keys (canonical form), then compare SHA-256 against req.Hash.
-	// This matches the C++ agent's nlohmann/json canonical serialisation.
+	// Verify hash: unmarshal the report into a map, then recompute the hash over
+	// its canonical encoding and compare against the hash the agent sent. The
+	// encoding rules live in internal/canonical, which is the shared contract
+	// with the C++ agent and the Python backend.
 	var m map[string]any
 	if err := json.Unmarshal(req.Report, &m); err != nil {
 		slog.Warn("reports: report field is not a JSON object", "err", err, "remote", r.RemoteAddr)
@@ -70,13 +69,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "report must be a JSON object"})
 		return
 	}
-	canonical, err := canonicalizeMap(m)
+	computed, err := canonical.Hash(m)
 	if err != nil {
 		slog.Warn("reports: failed to canonicalize report", "err", err, "remote", r.RemoteAddr)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid report"})
 		return
 	}
-	computed := fmt.Sprintf("%x", sha256.Sum256(canonical))
 	if computed != req.Hash {
 		slog.Warn("reports: hash mismatch", "remote", r.RemoteAddr, "want", req.Hash, "got", computed)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "hash mismatch"})
@@ -92,16 +90,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("reports: accepted", "hash", req.Hash, "latency_ms", time.Since(start).Milliseconds())
 	writeJSON(w, http.StatusOK, map[string]string{"status": "accepted", "hash": req.Hash})
-}
-
-func canonicalizeMap(m map[string]any) ([]byte, error) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(m); err != nil {
-		return nil, err
-	}
-	return bytes.TrimSuffix(buf.Bytes(), []byte{'\n'}), nil
 }
 
 // writeJSON encodes v as JSON, sets Content-Type, and writes the given status code.

@@ -1,6 +1,7 @@
 {
   "name": "sentinel",
   "version-string": "0.1.0",
+  "builtin-baseline": "386d7c478221b7ee0c97bfe6ea61dcf65121d564",
   "dependencies": [
     "nlohmann-json",
     "spdlog",
@@ -8,5 +9,8 @@
     "lua",
     "sqlite3",
     "cpp-httplib"
+  ],
+  "overrides": [
+    { "name": "lua", "version": "5.4.8" }
   ]
 }

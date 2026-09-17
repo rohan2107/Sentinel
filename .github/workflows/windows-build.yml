@@ -1,11 +1,26 @@
 name: Windows Build (CMake + vcpkg)
 
-# Trigger on pushes / PRs to master and feature branches
+# Required, on every push/PR to master, same as the other platform workflows.
+# This briefly ran as workflow_dispatch-only (manual) on the theory that
+# active development had moved to macOS and Windows could not be debugged
+# locally. Reverted: that conflated a one-time bootstrapping cost with an
+# ongoing one. Both real failures this workflow hit were structural bugs with
+# durable fixes, not recurring fragility -- an unpinned vcpkg dependency
+# (fixed by builtin-baseline + overrides in vcpkg.json) and a stale-cache
+# skip-clone interaction (fixed by the unconditional `git fetch` below) -- and
+# a project that claims to be cross-platform needs continuous evidence of
+# that, not a claim nobody is checking. The C++ agent genuinely is
+# cross-platform (only ~10% of its source sits inside #ifdef _WIN32, almost
+# entirely osquery_runner.cpp's process-spawning code, which necessarily
+# differs by OS) precisely because CI keeps proving it; the moment that stops
+# running automatically, a POSIX-only regression introduced from macOS-only
+# work would sit undetected until someone happened to run this by hand.
 on:
   push:
     branches: [ master ]
   pull_request:
     branches: [ master ]
+  workflow_dispatch: {}
 
 jobs:
   build-windows:
@@ -38,16 +53,25 @@ jobs:
       - name: Clone vcpkg
         shell: cmd
         run: |
-          if not exist "%VCPKG_ROOT%\vcpkg.exe" (
-            if not exist "%VCPKG_ROOT%" (
-              git clone https://github.com/microsoft/vcpkg.git "%VCPKG_ROOT%"
-            )
-            pushd "%VCPKG_ROOT%"
-            bootstrap-vcpkg.bat
-            popd
-          ) else (
-            echo vcpkg.exe already present
+          if not exist "%VCPKG_ROOT%" (
+            git clone https://github.com/microsoft/vcpkg.git "%VCPKG_ROOT%"
           )
+          pushd "%VCPKG_ROOT%"
+          REM The cache step above falls back to restore-keys on a cache-key
+          REM miss, which happens on every vcpkg.json change (that file is the
+          REM cache key). Its restore-keys prefix matches ANY older cache for
+          REM this OS, including one from before builtin-baseline was pinned, so
+          REM its .git history may not contain the commit vcpkg.json now
+          REM references -- while vcpkg.exe from that same stale cache still
+          REM exists on disk, so the old "skip clone if vcpkg.exe present"
+          REM check never noticed. Always fetch so a cached-but-stale clone's
+          REM history is current; this is exactly what vcpkg's own error
+          REM message asks for when it cannot find a pinned baseline commit.
+          git fetch --all --tags
+          if not exist vcpkg.exe (
+            call bootstrap-vcpkg.bat
+          )
+          popd
 
       - name: Install vcpkg packages
         shell: cmd
@@ -76,6 +100,17 @@ jobs:
           )
           echo Integration tests PASSED
 
+      - name: Run Lua Evaluator Tests
+        shell: cmd
+        run: |
+          echo Running Lua evaluator tests...
+          build\Release\test_lua_evaluator.exe policies\macos_policy.json
+          if errorlevel 1 (
+            echo Lua evaluator tests FAILED
+            exit /b 1
+          )
+          echo Lua evaluator tests PASSED
+
       - name: Upload build artifacts
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
@@ -83,36 +118,3 @@ jobs:
           name: sentinel-binaries
           path: |
             build/Release/*.exe
-
-  validate-backend:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install backend dependencies
-        run: pip install -r backend/requirements.txt
-
-      - name: Lint backend (syntax + import check)
-        run: python -m py_compile backend/server.py
-
-      - name: Validate policy JSON files
-        run: |
-          python -c "
-          import json, sys, pathlib
-          errors = 0
-          for p in pathlib.Path('policies').glob('*.json'):
-              try:
-                  data = json.loads(p.read_text())
-                  assert 'policy_name' in data or 'rules' in data, f'Missing policy_name or rules key'
-                  print(f'  [OK] {p}')
-              except Exception as e:
-                  print(f'  [FAIL] {p}: {e}', file=sys.stderr)
-                  errors += 1
-          sys.exit(1 if errors else 0)
-          "

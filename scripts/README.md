@@ -1,128 +1,49 @@
-# Build Scripts
+# Build scripts
 
-Sentinel provides both Command Prompt (.bat) and PowerShell 7 (.ps1) build scripts.
+Four operations, two script families that behave the same way: `.ps1` for
+Windows, `.sh` for macOS and Linux. Both are thin wrappers over CMake presets, so
+anything they do can be done directly with `cmake --preset`.
 
-## PowerShell 7 Scripts (Recommended for Shell Integration)
+| Operation | Windows | macOS / Linux |
+|---|---|---|
+| Build | `.\scripts\build.ps1 -Config Debug` | `./scripts/build.sh --config Debug` |
+| Run the agent | `.\scripts\run.ps1 -Policy policies\sample_policy.json` | `./scripts/run.sh --policy policies/macos_policy.json` |
+| Test | `.\scripts\test.ps1 -Config Both` | `./scripts/test.sh --config Both` |
+| Smoketest | `.\scripts\smoketest.ps1` | `./scripts/smoketest.sh` |
 
-### Prerequisites
-- PowerShell 7+ installed
-- Visual Studio 2022 Build Tools or Community Edition
-- vcpkg with required packages installed
+Every `.sh` script takes `--help`.
 
-### Usage
+## Differences worth knowing
 
-**Build:**
-```powershell
-.\scripts\build.ps1 -Config Debug    # or Release
+**Default configuration.** The shell scripts default to `Release`; `build.ps1`
+defaults to `Debug`. Release is what CI validates and it lands in `build/`, the
+path `run.sh` looks in. Debug goes to `build-debug/`, because single-config
+generators cannot share one build directory between configurations the way the
+Visual Studio generator does.
+
+**Policy selection.** `run.sh` picks the policy matching the host OS when
+`--policy` is omitted — policies are not portable, since each rule carries an
+osquery query and the tables differ per platform.
+
+**Forwarding arguments.** Anything after `--` goes to the agent:
+
+```bash
+./scripts/run.sh -- --enable-delivery --backend-url http://localhost:8000
 ```
 
-**Run:**
-```powershell
-.\scripts\run.ps1 -Policy policies\sample_policy.json -Config Debug
-```
+**What `test.sh` covers.** Build, both test binaries via ctest, policy JSON
+validation, the cross-language canonicalization test, and the backend syntax
+check — the same set as CI. Steps whose toolchain is missing are skipped with a
+reason rather than silently passing.
 
-**Test (Integration Tests):**
-```powershell
-.\scripts\test.ps1 -Config Debug    # or Release
-```
-*Runs delivery foundation integration tests*
+## Prerequisites
 
-**Smoketest (Build + Run + Verify):**
-```powershell
-.\scripts\smoketest.ps1
-```
+Windows: Visual Studio 2022 build tools, vcpkg with the packages in
+`vcpkg.json`, PowerShell 7+.
 
-**Pre-Commit Checklist (Comprehensive Validation):**
-```powershell
-.\scripts\pre-commit-checklist.ps1
-```
-*Runs all validation checks before committing:*
-- ✅ Build validation (Debug config)
-- ✅ Automated test suite (all integration tests)
-- ✅ Backward compatibility (Phase 1 functionality)
-- ✅ CLI argument handling (all variations)
-- ✅ HTTP delivery to FastAPI backend (if available)
-- ✅ Code quality checks (debug patterns)
-- ✅ Documentation verification
-- ✅ Git status review
+macOS: `brew install cmake lua@5.4 spdlog nlohmann-json sol2 cpp-httplib`.
 
-**Options:**
-```powershell
-# Skip backend testing (if Python not available)
-.\scripts\pre-commit-checklist.ps1 -SkipBackendTest
-
-# Quick validation only (no backend test)
-.\scripts\pre-commit-checklist.ps1 -Quick
-```
-
-### Execution Policy
-
-If you get an execution policy error, run:
-```powershell
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-```
-
-### Shell Integration
-
-PowerShell 7 provides better shell integration with VS Code including:
-- Command feedback
-- PWD tracking
-- Git status
-- Command decorations
-
-To use PowerShell 7 as default terminal in VS Code:
-1. Open Settings (Ctrl+,)
-2. Search for "terminal.integrated.defaultProfile.windows"
-3. Set to "PowerShell" (pwsh.exe)
-
-## Command Prompt Scripts (Legacy)
-
-**Build:**
-```cmd
-scripts\build.bat Debug
-```
-
-**Run:**
-```cmd
-scripts\run.bat policies\sample_policy.json
-```
-
-**Test (Integration Tests):**
-```cmd
-scripts\test.bat Debug
-```
-*Runs delivery foundation integration tests*
-
-**Smoketest:**
-```cmd
-scripts\smoketest.bat
-```
-
-**Pre-Commit Checklist:**
-```cmd
-scripts\pre-commit-checklist.bat
-```
-*Runs all validation checks before committing (see PowerShell section for details)*
-
-## Troubleshooting
-
-### "vcvars64_wrapper.bat" error in PowerShell
-
-If you see `/k C:\tools\vcvars64_wrapper.bat` errors:
-
-1. **Option A**: Run from a "Developer Command Prompt for VS 2022" instead of regular PowerShell
-2. **Option B**: Use the Command Prompt (.bat) scripts instead
-3. **Option C**: Remove the vcvars64_wrapper.bat from your profile/startup scripts
-
-The PowerShell scripts (.ps1) work best when run from a Developer PowerShell or when Visual Studio environment is already loaded.
-
-### "cmake not found"
-
-Ensure CMake is installed and on PATH:
-```powershell
-winget install cmake
-```
-
-### "osqueryi not found"
-
-Download and install osquery from https://osquery.io/downloads/official
+Both: osquery is a **runtime** dependency of the agent only. Without it the agent
+still builds and runs, but every rule fails collection and the score reads 0 for
+that reason rather than because the host is misconfigured. Neither test binary
+needs it.
