@@ -76,6 +76,17 @@ jobs:
           )
           echo Integration tests PASSED
 
+      - name: Run Lua Evaluator Tests
+        shell: cmd
+        run: |
+          echo Running Lua evaluator tests...
+          build\Release\test_lua_evaluator.exe policies\macos_policy.json
+          if errorlevel 1 (
+            echo Lua evaluator tests FAILED
+            exit /b 1
+          )
+          echo Lua evaluator tests PASSED
+
       - name: Upload build artifacts
         if: ${{ always() }}
         uses: actions/upload-artifact@v4

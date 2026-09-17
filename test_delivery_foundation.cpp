@@ -18,8 +18,12 @@ std::string get_future_timestamp(int hours_ahead) {
     auto future = now + std::chrono::hours(hours_ahead);
     auto future_time_t = std::chrono::system_clock::to_time_t(future);
     
-    std::tm tm_utc;
-    gmtime_s(&tm_utc, &future_time_t);  // Windows-safe version
+    std::tm tm_utc{};
+#ifdef _WIN32
+    gmtime_s(&tm_utc, &future_time_t);
+#else
+    gmtime_r(&future_time_t, &tm_utc);
+#endif
     
     std::ostringstream oss;
     oss << std::put_time(&tm_utc, "%Y-%m-%d %H:%M:%S");

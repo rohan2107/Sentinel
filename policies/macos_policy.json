@@ -1,0 +1,34 @@
+{
+  "policy_name": "sample-default-macos",
+  "base_score": 100,
+  "rules": [
+    {
+      "id": "firewall_enabled",
+      "desc": "Application Layer Firewall must be enabled (global_state >= 1)",
+      "query": "SELECT global_state, stealth_enabled FROM alf LIMIT 1",
+      "lua": "if #results == 0 then return false end\nlocal state = tonumber(tostring(results[1].global_state or \"\"))\nreturn state ~= nil and state >= 1",
+      "weight": 25
+    },
+    {
+      "id": "av_installed",
+      "desc": "Gatekeeper assessments must be enabled (macOS code-signing enforcement)",
+      "query": "SELECT assessments_enabled, dev_id_enabled FROM gatekeeper LIMIT 1",
+      "lua": "if #results == 0 then return false end\nlocal enabled = tostring(results[1].assessments_enabled or \"\")\nreturn enabled == \"1\" or string.lower(enabled) == \"true\"",
+      "weight": 25
+    },
+    {
+      "id": "filevault_encrypted",
+      "desc": "Root volume must be FileVault-encrypted",
+      "query": "SELECT de.encrypted AS encrypted FROM mounts m JOIN disk_encryption de ON m.device = de.name WHERE m.path = '/' LIMIT 1",
+      "lua": "if #results == 0 then return false end\nlocal enc = tostring(results[1].encrypted or \"\")\nreturn enc == \"1\" or string.lower(enc) == \"true\"",
+      "weight": 30
+    },
+    {
+      "id": "sip_enabled",
+      "desc": "System Integrity Protection must be enabled",
+      "query": "SELECT enabled, enabled_nvram FROM sip_config WHERE config_flag = 'sip' LIMIT 1",
+      "lua": "if #results == 0 then return false end\nlocal enabled = tostring(results[1].enabled or \"\")\nreturn enabled == \"1\" or string.lower(enabled) == \"true\"",
+      "weight": 20
+    }
+  ]
+}

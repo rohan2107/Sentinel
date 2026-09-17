@@ -1,4 +1,5 @@
 // src/main.cpp
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -263,6 +264,18 @@ int main(int argc, char** argv) {
 
     // Persist report file (best-effort)
     try {
+        // reports/ is gitignored, so it is absent on a fresh clone and ofstream
+        // would fail to open the file. Create the parent directory first.
+        const auto parent = std::filesystem::path(opts.report_path).parent_path();
+        if (!parent.empty()) {
+            std::error_code ec;
+            std::filesystem::create_directories(parent, ec);
+            if (ec) {
+                spdlog::warn("Could not create report directory {}: {}",
+                             parent.string(), ec.message());
+            }
+        }
+
         std::ofstream ofs(opts.report_path);
         if (ofs) {
             ofs << report.dump(2);

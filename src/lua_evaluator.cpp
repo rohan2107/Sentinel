@@ -11,7 +11,7 @@ using json = nlohmann::json;
 // - For objects, uses string keys.
 static sol::object json_to_sol(const json& j, sol::state_view lua) {
     if (j.is_null()) {
-        return sol::make_object(lua, sol::nil);
+        return sol::make_object(lua, sol::lua_nil);
     } else if (j.is_boolean()) {
         return sol::make_object(lua, j.get<bool>());
     } else if (j.is_number_integer()) {
@@ -40,7 +40,7 @@ static sol::object json_to_sol(const json& j, sol::state_view lua) {
     }
 
     // fallback
-    return sol::make_object(lua, sol::nil);
+    return sol::make_object(lua, sol::lua_nil);
 }
 
 bool eval_lua_against_json(const std::string& luaCode, const json& resultsJson) {
@@ -92,7 +92,7 @@ bool eval_lua_against_json(const std::string& luaCode, const json& resultsJson) 
             // If returned non-boolean, try to interpret truthiness: nil -> false, else true
             // (sol doesn't provide direct "truthiness" query so examine top of stack)
             sol::object ret = call_res.get<sol::object>();
-            if (ret.is<sol::nil_t>()) return false;
+            if (ret.is<sol::lua_nil_t>()) return false;
             // any other non-false value -> true
             if (ret.is<bool>()) return ret.as<bool>();
             return true;
