@@ -278,24 +278,35 @@ no versioned migration framework yet.
 | osquery wall time | 10s | **Windows only.** `WaitForSingleObject` bounds it. On POSIX the check sits inside the read loop, so it only fires while output is flowing — a silently hanging `osqueryi` blocks in `read()` indefinitely |
 | osquery output | 1 MB | Yes, but same caveat: checked per read |
 | osquery process cleanup | kill on breach | `SIGKILL` / `TerminateProcess` directly, with no `SIGTERM` grace period |
-| Lua CPU time | 1s (claimed by earlier docs) | **No. Not enforced at all.** See below |
+| Lua CPU time | 1s | Yes — `lua_sethook` with `LUA_MASKCOUNT`, checked every 10,000 VM instructions |
 | Lua memory | — | Not bounded; the default allocator is used |
 | Lua library surface | no I/O | Yes — only `base`, `table`, `string`, `math` are opened, so `io`, `os` and `package` are absent |
 | Policy file size | — | Not checked. Only `query` length (4096 chars) is validated |
 | Delivery attempts | 10 | Yes, then `FAILED` |
 | HTTP request | 30s | Yes — connection, read and write timeouts via cpp-httplib |
 
-**The Lua timeout does not exist.** There is no `lua_sethook`, no instruction
-counter and no wall-clock check in `lua_evaluator.cpp`. Measured directly: a rule
-running a 3-billion-iteration loop ran for 9.75 seconds and returned normally
-rather than being aborted. A policy containing `while true do end` hangs the
-agent forever. Since policies are data that the evaluation loop executes, this is
-the most significant gap in the system.
+**The Lua timeout is enforced.** It was the top entry in
+[Known gaps](#known-gaps) until fixed.
+Measured before the fix: a rule running a 3-billion-iteration loop ran for 9.75
+seconds and returned normally rather than being aborted — a policy containing
+`while true do end` hung the agent forever. The fix installs a debug hook
+(`lua_sethook`, `LUA_MASKCOUNT`) that fires every 10,000 VM instructions; if a
+wall-clock deadline set before the call has passed, the hook raises a Lua error
+from inside itself, which is the standard, documented way to abort a running
+script in embedded Lua (hooks are one of the few contexts where doing so is
+safe). The error surfaces through the existing `sol::protected_function` error
+path unchanged, so the rule is recorded as failed and evaluation moves on to the
+next rule — no caller-side handling needed to change. Verified both directions:
+the runaway case now returns in ~1s instead of 9.75s, and a 100k-iteration
+legitimate loop is unaffected (0ms, hook overhead is not perceptible for
+anything a real compliance check does).
 
-The library restriction is real and worth stating precisely: those four libraries
-are simply never opened, which is stronger than disabling functions after the
-fact. But a restricted library surface is not a CPU bound, and it is not a
-security boundary — policy authorship must be trusted.
+The library restriction is separate and still worth stating precisely: those
+four libraries are simply never opened, which is stronger than disabling
+functions after the fact. But it is a restricted library surface, not a
+security boundary, and the CPU bound above doesn't change that — a policy still
+runs with the trust that implies. Both are resource bounds against a buggy or
+excessive policy, not defenses against a malicious one.
 
 ---
 
@@ -326,27 +337,26 @@ Neither receiver authenticates requests.
 
 Ordered by how much they matter:
 
-1. **No Lua CPU bound** — a policy can hang the agent indefinitely.
-2. **No heartbeat** — with suppression active, silence cannot distinguish a
+1. **No heartbeat** — with suppression active, silence cannot distinguish a
    healthy agent from a dead one. This is the direct consequence of
    state-change-triggered reporting and the next thing to build.
-3. **The retry queue is unbounded** — no size cap, no age cutoff, and terminal
+2. **The retry queue is unbounded** — no size cap, no age cutoff, and terminal
    `DELIVERED`/`FAILED` rows are never pruned. Each row holds the full report
    JSON, so an agent that cannot reach its backend grows the table indefinitely.
    Suppression reduces the rate but does not bound it: a host whose posture
    flaps produces a real change every cycle with nowhere to send it.
-4. **Go aggregator does not persist anything** — accepted reports are discarded.
-5. **No transport security or authentication** — plain HTTP, no API keys; TLS
+3. **Go aggregator does not persist anything** — accepted reports are discarded.
+4. **No transport security or authentication** — plain HTTP, no API keys; TLS
    would have to terminate at a reverse proxy.
-6. **POSIX osquery timeout is best-effort** — see the bounds table.
-7. **Foreign keys not enforced** — `PRAGMA foreign_keys=ON` is never set.
-8. **No versioned migrations** — additive changes only.
-9. **Traffic reduction is unmeasured.** The mechanism works and is tested, but
+5. **POSIX osquery timeout is best-effort** — see the bounds table.
+6. **Foreign keys not enforced** — `PRAGMA foreign_keys=ON` is never set.
+7. **No versioned migrations** — additive changes only.
+8. **Traffic reduction is unmeasured.** The mechanism works and is tested, but
    no benchmark exists, and any figure must count heartbeat overhead once
    heartbeats exist, or it measures "stopped sending" rather than "sent less".
-10. **`src/json_to_lua.cpp` is orphaned** — not listed in `CMakeLists.txt`, so it
+9. **`src/json_to_lua.cpp` is orphaned** — not listed in `CMakeLists.txt`, so it
    is never compiled at all; `lua_evaluator.cpp` has its own private converter.
-11. **No MQTT client** — the `DeliveryClient` interface exists to allow one.
+10. **No MQTT client** — the `DeliveryClient` interface exists to allow one.
 
 ---
 

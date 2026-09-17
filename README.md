@@ -13,12 +13,14 @@ Local evaluation runs standalone with no network dependency; delivery is opt-in 
 - **Policy evaluation**: osquery data collection + Lua rule engine + weighted scoring
 - **Crash-safe persistence**: SQLite with WAL mode, atomic transactions
 - **Restricted rule execution**: Lua 5.4 with only `base`, `table`, `string` and
-  `math` opened, so there is no file, process or network access. This is a
-  restricted library surface, **not** a CPU bound and not a security boundary —
-  there is currently no Lua timeout, so policy authorship must be trusted (the
-  top item on the [roadmap](docs/ROADMAP.md))
+  `math` opened, so there is no file, process or network access, plus a 1s CPU
+  bound so a policy cannot hang the agent. Note this is a resource bound, not a
+  security boundary — a policy still runs with the trust that implies; see
+  [architecture/README.md](architecture/README.md#resource-bounds) for exactly
+  what that bound does and does not cover
 - **Resource bounds**: osquery 10s wall time (enforced on Windows; best-effort on
-  POSIX) and a 1MB output cap. See
+  POSIX), a 1MB output cap, and Lua's 1s CPU bound (`lua_sethook`, checked every
+  10k VM instructions). See
   [architecture/README.md](architecture/README.md#resource-bounds) for exactly
   what is and is not enforced
 - **State-change-triggered delivery**: two hashes — `posture_hash` (policy,
@@ -111,8 +113,8 @@ Policies define security rules using osquery for data collection and Lua for eva
 
 1. **Load Policy**: Parse JSON policy file, validate schema
 2. **Collect Data**: Execute osquery with 10s timeout
-3. **Evaluate Rules**: Run Lua code with a restricted library surface (no
-   timeout — see [known gaps](architecture/README.md#known-gaps))
+3. **Evaluate Rules**: Run Lua code with a restricted library surface and a
+   1s CPU bound
 4. **Compute Score**: `base_score` minus the weight of each failed rule,
    clamped to 0-100
 5. **Persist**: Atomic SQLite transaction (WAL mode)
@@ -358,7 +360,7 @@ page lists what does.
 
 Performance numbers aren't included because none have been measured against
 the current implementation — see
-[docs/ROADMAP.md](docs/ROADMAP.md#5-measure-the-traffic-reduction-properly)
+[docs/ROADMAP.md](docs/ROADMAP.md#4-measure-the-traffic-reduction-properly)
 for the plan to produce a real one, with its methodology stated up front
 rather than a number asserted after the fact.
 

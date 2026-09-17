@@ -1,10 +1,72 @@
 // src/lua_evaluator.cpp
 #include "lua_evaluator.h"
 
+#include <chrono>
+
 #include <sol/sol.hpp>
 #include <spdlog/spdlog.h>
 
 using json = nlohmann::json;
+
+namespace {
+
+// CPU bound per rule evaluation. This is a resource bound, not a security
+// boundary: it stops a policy from hanging the agent forever, it does not
+// make untrusted Lua safe to run. Policy authorship must still be trusted --
+// see docs/trade-offs.md and architecture/README.md.
+//
+// Measured without this bound: a rule running a 3-billion-iteration loop ran
+// for 9.75 seconds and returned normally, because nothing was watching. A
+// policy containing `while true do end` hung the agent indefinitely.
+constexpr std::chrono::milliseconds kLuaTimeout{1000};
+
+// How many Lua VM instructions between wall-clock checks (LUA_MASKCOUNT).
+// Cheap enough that legitimate rules (a handful of comparisons over a few
+// osquery rows) never notice it; frequent enough that overshoot past
+// kLuaTimeout is a matter of microseconds, not something a policy could
+// exploit to run meaningfully longer than the bound.
+constexpr int kLuaHookInstructionCount = 10000;
+
+// Address used as a light-userdata registry key for stashing this call's
+// deadline where the hook can read it back. An address (not a string) can't
+// collide with anything a policy's Lua code could itself set in the
+// registry or in _G.
+char g_deadline_key = 0;
+
+double steady_now_seconds() {
+    using namespace std::chrono;
+    return duration<double>(steady_clock::now().time_since_epoch()).count();
+}
+
+// Installed as a debug hook for the duration of one rule's call (see
+// lua_sethook below). Fires every kLuaHookInstructionCount VM instructions;
+// if the deadline stashed in the registry has passed, aborts the running
+// script by raising a Lua error from inside the hook. This is the standard,
+// documented way to implement an execution timeout in embedded Lua -- see
+// "Programming in Lua", the debug library chapter -- and it is safe
+// specifically because hooks are one of the few contexts Lua guarantees can
+// call lua_error/luaL_error to unwind the running script. The error
+// propagates through the calling sol::protected_function exactly like any
+// other Lua runtime error, so no caller-side handling changes.
+void lua_timeout_hook(lua_State* L, lua_Debug* /*ar*/) {
+    lua_pushlightuserdata(L, &g_deadline_key);
+    lua_gettable(L, LUA_REGISTRYINDEX);
+    const double deadline = lua_tonumber(L, -1);
+    lua_pop(L, 1);
+    if (steady_now_seconds() > deadline) {
+        // Lua's own string formatting supports only %d, %s, %f, %p, %c, %% --
+        // not arbitrary C printf specifiers. %lld is not one of them, and
+        // using it here does not fail to compile (this is runtime
+        // formatting, not printf), it fails at the call, producing a
+        // confusing "invalid option to lua_pushfstring" in place of the
+        // intended message. kLuaTimeout comfortably fits an int, so %d avoids
+        // the whole class of mismatch rather than picking a wider specifier.
+        luaL_error(L, "rule exceeded %dms CPU bound",
+                   static_cast<int>(kLuaTimeout.count()));
+    }
+}
+
+} // namespace
 
 // Recursively copy JSON into a sol::table (for objects/arrays) or push primitive values.
 // - For arrays, uses 1-based indices (Lua style).
@@ -73,6 +135,19 @@ bool eval_lua_against_json(const std::string& luaCode, const json& resultsJson) 
             spdlog::error("Lua function __USER_EVAL__ not found after loading code.");
             return false;
         }
+
+        // The hook only needs to be live for this call: __USER_EVAL__'s body
+        // is where a policy's loop can actually run long, not the definition
+        // step above (that just compiles and registers the closure, it does
+        // not execute the body). sol2 has no higher-level wrapper for debug
+        // hooks, so this drops to the raw Lua C API directly.
+        lua_State* L = sv.lua_state();
+        const double deadline = steady_now_seconds()
+            + std::chrono::duration<double>(kLuaTimeout).count();
+        lua_pushlightuserdata(L, &g_deadline_key);
+        lua_pushnumber(L, deadline);
+        lua_settable(L, LUA_REGISTRYINDEX);
+        lua_sethook(L, lua_timeout_hook, LUA_MASKCOUNT, kLuaHookInstructionCount);
 
         sol::protected_function_result call_res = user_fn();
         if (!call_res.valid()) {
