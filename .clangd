@@ -1,0 +1,11 @@
+# Tells clangd (and the VS Code clangd extension) where to find
+# compile_commands.json, which CMake now generates via
+# CMAKE_EXPORT_COMPILE_COMMANDS. That file is what resolves the external
+# (nlohmann, spdlog, sol2, Lua) and local (src/) include paths — without it
+# the language server has no way to know where those headers live, even
+# though the actual CMake build finds them fine.
+#
+# Re-run `cmake --preset macos-release` (or your platform's preset) after a
+# clean checkout so build/compile_commands.json exists before this applies.
+CompileFlags:
+  CompilationDatabase: build

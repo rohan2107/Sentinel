@@ -48,11 +48,22 @@ jobs:
         # is a runtime dependency of the agent, not of the test suite.
         run: ctest --preset macos-release
 
+      - name: Set up Go
+        # Python 3 ships on the macos-latest image; Go does not, and the
+        # comment that used to be here claimed otherwise. Without this step
+        # compare.py below fails with "missing implementation: go" rather than
+        # actually comparing anything.
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go-aggregator/go.mod
+          cache: true
+          cache-dependency-path: go-aggregator/go.sum
+
       - name: Canonicalization differential test
-        # Runs here rather than in a language-specific workflow because it is the
-        # only job with all three toolchains: C++ (built above), Python 3 and Go
-        # are all present on the macOS runner. No --allow-missing: a two-way
-        # comparison can hide a three-way disagreement.
+        # Runs here rather than in a language-specific workflow because, once Go
+        # is set up above, this is the only job with all three toolchains: C++
+        # (built above), Python 3 (preinstalled) and Go. No --allow-missing: a
+        # two-way comparison can hide a three-way disagreement.
         run: python3 tests/canonicalization/compare.py --cpp ./build/canon_dump
 
       - name: Verify the agent runs

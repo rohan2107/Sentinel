@@ -4,6 +4,13 @@ project(Sentinel LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Emits build/compile_commands.json, which clangd and the VS Code C/C++
+# extension use to resolve include paths (nlohmann, spdlog, sol2, Lua) that
+# only exist because CMake found them, not because of any editor config.
+# Without this the language server has no idea where those headers are and
+# flags every #include, even though the actual build is unaffected.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # Default to Release for single-config generators (Makefiles, Ninja) so a bare
 # `cmake -S . -B build` on macOS/Linux doesn't silently produce an unoptimised
 # binary. Multi-config generators (Visual Studio, Xcode) ignore this.
@@ -32,6 +39,16 @@ find_package(httplib CONFIG REQUIRED)
 # Pin to Lua 5.4 on both platforms: policy rules are Lua source shipped as data,
 # so the language version is part of the policy contract. A 5.4 agent and a 5.5
 # agent would not evaluate the same policy file identically.
+#
+# On Windows this pin lives in vcpkg.json, not here: "lua" was an unconstrained
+# dependency with no "builtin-baseline", which puts vcpkg in Classic mode and
+# makes it ignore versioning entirely -- it just builds whatever the port tree's
+# HEAD happens to be. That is what silently moved the Windows build from Lua 5.4
+# to 5.5.1 with no change on our side. vcpkg.json now pins "builtin-baseline" to
+# a fixed vcpkg commit and overrides "lua" to "5.4.8", which fixes two things at
+# once: it forces 5.4 specifically, and it freezes every other dependency
+# version against future unannounced port bumps, since "overrides" only takes
+# effect once a baseline turns versioning on at all.
 # ---------------------------------------------------------------------------
 if(WIN32)
   set(_vcpkg_root "C:/vcpkg" CACHE PATH "vcpkg root (fallback)")
@@ -112,9 +129,31 @@ if(NOT (LUA_INCLUDE_DIR AND LUA_LIBRARY))
 endif()
 
 # Check the version of the header sol2 will actually see.
+#
+# Lua <= 5.4 defines LUA_VERSION_NUM as a plain integer literal ("504"). Lua
+# 5.5 redefined it as an arithmetic expression,
+# "(LUA_VERSION_MAJOR_N * 100 + LUA_VERSION_MINOR_N)", so a naive "grab the
+# first number on the line" match reads off the "100" multiplier instead of
+# the version -- this previously misreported LUA_VERSION_NUM=100 for a 5.5
+# header instead of 505, which made the warning below actively misleading.
+# Try the literal-integer form first and fall back to computing it from the
+# major/minor macros when that fails.
 if(EXISTS "${_lua_version_header}")
   file(STRINGS "${_lua_version_header}" _lua_version_line REGEX "^#define[ \t]+LUA_VERSION_NUM[ \t]+")
-  string(REGEX MATCH "[0-9]+" _lua_version_num "${_lua_version_line}")
+  string(REGEX MATCH "LUA_VERSION_NUM[ \t]+([0-9]+)[ \t]*$" _lua_literal_match "${_lua_version_line}")
+  if(CMAKE_MATCH_1)
+    set(_lua_version_num "${CMAKE_MATCH_1}")
+  else()
+    file(STRINGS "${_lua_version_header}" _lua_major_line REGEX "^#define[ \t]+LUA_VERSION_MAJOR_N[ \t]+[0-9]+")
+    file(STRINGS "${_lua_version_header}" _lua_minor_line REGEX "^#define[ \t]+LUA_VERSION_MINOR_N[ \t]+[0-9]+")
+    string(REGEX MATCH "[0-9]+" _lua_major_num "${_lua_major_line}")
+    string(REGEX MATCH "[0-9]+" _lua_minor_num "${_lua_minor_line}")
+    if(_lua_major_num AND _lua_minor_num)
+      math(EXPR _lua_version_num "${_lua_major_num} * 100 + ${_lua_minor_num}")
+    else()
+      set(_lua_version_num "")
+    endif()
+  endif()
   if(_lua_version_num AND NOT _lua_version_num EQUAL 504)
     message(WARNING
       "Lua headers at ${_lua_version_header} report LUA_VERSION_NUM="
@@ -169,6 +208,23 @@ int main() {
     return ok ? 0 : 1;
 }
 ")
+  # On Windows, vcpkg's default (dynamic) triplet builds Lua as a DLL. try_run()
+  # executes the probe straight from the build tree, before any of vcpkg's
+  # install-time "copy DLLs next to the .exe" step has run for a real target,
+  # so the loader cannot find lua.dll unless it is already on PATH. Without
+  # this, the probe does not fail because of a genuine version mismatch --
+  # it fails to start at all (exit code 0xc0000135, STATUS_DLL_NOT_FOUND),
+  # which then gets reported as a false "Lua header/library mismatch" that
+  # has nothing to do with versions.
+  if(WIN32)
+    get_filename_component(_lua_lib_dir "${LUA_LIBRARY}" DIRECTORY)
+    get_filename_component(_lua_bin_dir "${_lua_lib_dir}/../bin" ABSOLUTE)
+    if(EXISTS "${_lua_bin_dir}")
+      set(_sentinel_saved_path "$ENV{PATH}")
+      set(ENV{PATH} "${_lua_bin_dir};$ENV{PATH}")
+    endif()
+  endif()
+
   try_run(_lua_probe_run _lua_probe_compile
     SOURCES "${_probe_src}"
     LINK_LIBRARIES Lua::Lua
@@ -176,6 +232,10 @@ int main() {
     RUN_OUTPUT_VARIABLE _lua_probe_output
   )
   string(STRIP "${_lua_probe_output}" _lua_probe_output)
+
+  if(WIN32 AND DEFINED _sentinel_saved_path)
+    set(ENV{PATH} "${_sentinel_saved_path}")
+  endif()
 
   if(NOT _lua_probe_compile)
     message(FATAL_ERROR
