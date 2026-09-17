@@ -1,16 +1,18 @@
 name: Go Aggregator CI
 
+# Unconditional, not path-filtered. build-and-test is a required branch
+# protection check, and a required check that is also path-filtered can never
+# be satisfied on a PR that happens not to touch those paths: GitHub has no
+# native "required only when relevant" mode, so the PR is stuck forever on
+# "Expected — waiting for status to be reported". This is that fix, applied
+# after hitting it on a real PR. Same call already made for windows-build.yml:
+# a few extra seconds of CI on unrelated commits costs less than a merge that
+# cannot complete.
 on:
   push:
-    # No branch filter — runs on any branch where go-aggregator/ files change.
-    paths:
-      - 'go-aggregator/**'
-      - '.github/workflows/go-aggregator.yml'
+    branches: [ master ]
   pull_request:
     branches: [ master ]
-    paths:
-      - 'go-aggregator/**'
-      - '.github/workflows/go-aggregator.yml'
 
 jobs:
   build-and-test:
