@@ -255,7 +255,7 @@ target_link_libraries(Sentinel PRIVATE
 # Deliberately links a narrower set than the agent: these translation units
 # pull in neither spdlog nor Lua.
 add_executable(test_delivery_foundation
-  test_delivery_foundation.cpp
+  tests/test_delivery_foundation.cpp
   src/db.cpp
   src/report_hasher.cpp
   src/delivery_client.cpp
@@ -276,7 +276,7 @@ target_link_libraries(test_delivery_foundation PRIVATE
 # platform: the policy file is data, and its Lua snippets evaluate identically
 # wherever the agent is built.
 add_executable(test_lua_evaluator
-  test_lua_evaluator.cpp
+  tests/test_lua_evaluator.cpp
   src/lua_evaluator.cpp
 )
 

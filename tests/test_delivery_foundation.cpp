@@ -13,6 +13,15 @@
 
 using json = nlohmann::json;
 
+// Remove a test database and the two sidecar files SQLite creates in WAL mode.
+// Plain remove() leaves <db>-wal and <db>-shm behind, which litters the repo
+// root and can carry state into the next run.
+static void remove_db(const std::string& path) {
+    remove(path.c_str());
+    remove((path + "-wal").c_str());
+    remove((path + "-shm").c_str());
+}
+
 // Helper function to compute future timestamp in ISO8601 format
 std::string get_future_timestamp(int hours_ahead) {
     auto now = std::chrono::system_clock::now();
@@ -83,7 +92,7 @@ void test_retry_queue() {
     
     // Use temporary database
     const char* test_db = "test_sentinel.db";
-    remove(test_db);
+    remove_db(test_db);
     
     DB db(test_db);
     db.init_schema();
@@ -173,14 +182,14 @@ void test_retry_queue() {
     }
     
     std::cout << "\n";
-    remove(test_db);
+    remove_db(test_db);
 }
 
 void test_retry_queue_manager() {
     std::cout << "=== Testing RetryQueue Manager ===\n";
     
     const char* test_db = "retry_queue_test.db";
-    remove(test_db);
+    remove_db(test_db);
     
     DB db(test_db);
     db.init_schema();
@@ -246,14 +255,14 @@ void test_retry_queue_manager() {
     }
     
     std::cout << "\n";
-    remove(test_db);
+    remove_db(test_db);
 }
 
 void test_integration() {
     std::cout << "=== Testing End-to-End Integration ===\n";
     
     const char* test_db = "integration_test.db";
-    remove(test_db);
+    remove_db(test_db);
     
     DB db(test_db);
     db.init_schema();
@@ -297,7 +306,7 @@ void test_integration() {
     std::cout << "[PASS] Full flow: persist -> hash -> enqueue -> deliver -> mark delivered\n";
     std::cout << "[PASS] Report successfully delivered and marked\n\n";
     
-    remove(test_db);
+    remove_db(test_db);
 }
 
 // Helper: build a report with the given posture and timestamp.
@@ -340,7 +349,7 @@ void test_posture_suppression() {
 
     // --- Suppression decision over the queue -------------------------------
     const char* test_db = "posture_test.db";
-    remove(test_db);
+    remove_db(test_db);
     DB db(test_db);
     db.init_schema();
 
@@ -407,7 +416,7 @@ void test_posture_suppression() {
     std::cout << "[PASS] FAILED delivery does not suppress the next report\n";
 
     std::cout << "\n";
-    remove(test_db);
+    remove_db(test_db);
 }
 
 int main() {
@@ -449,7 +458,7 @@ int main() {
     const char* test_dbs[] = {"test_sentinel.db", "retry_queue_test.db", "integration_test.db",
                                "posture_test.db"};
     for (const char* db_name : test_dbs) {
-        remove(db_name);
+        remove_db(db_name);
     }
     
     return 0;
