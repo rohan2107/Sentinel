@@ -2,32 +2,37 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Sentinel is a security compliance evaluation agent demonstrating deterministic policy evaluation, durable persistence, and clean architectural patterns.**
+**Sentinel is a security compliance agent: it collects host state with osquery, evaluates it against policy rules written in Lua, and delivers the result with at-least-once, deduplicated semantics.**
 
-This project showcases engineering thinking for agent-based systems: crash-safe persistence (SQLite WAL), sandboxed rule execution (Lua), at-least-once HTTP delivery with exponential backoff, and separation of concerns. Phase 1 handles local evaluation; Phase 2 adds durable delivery with SHA-256 content-addressable deduplication.
+Local evaluation runs standalone with no network dependency; delivery is opt-in via `--enable-delivery`. See [architecture/README.md](architecture/README.md) for how the system actually works, what it guarantees, and its known gaps — the honest, detailed counterpart to this overview.
 
 ---
 
-## Project Status
+## What's Implemented
 
-### Phase 1: Local Evaluation Engine ✅ **IMPLEMENTED**
-
-Currently built and working:
-
-- **Deterministic Policy Evaluation**: osquery data collection + Lua rule engine + weighted scoring
-- **Crash-Safe Persistence**: SQLite with WAL mode, atomic transactions
-- **Restricted Rule Execution**: Lua 5.4 with only `base`, `table`, `string` and
-  `math` opened, so there is no file, process or network access. Note this is a
+- **Policy evaluation**: osquery data collection + Lua rule engine + weighted scoring
+- **Crash-safe persistence**: SQLite with WAL mode, atomic transactions
+- **Restricted rule execution**: Lua 5.4 with only `base`, `table`, `string` and
+  `math` opened, so there is no file, process or network access. This is a
   restricted library surface, **not** a CPU bound and not a security boundary —
-  there is currently no Lua timeout, so policy authorship must be trusted
-- **Resource Bounds**: osquery 10s wall time (enforced on Windows; best-effort on
+  there is currently no Lua timeout, so policy authorship must be trusted (the
+  top item on the [roadmap](docs/ROADMAP.md))
+- **Resource bounds**: osquery 10s wall time (enforced on Windows; best-effort on
   POSIX) and a 1MB output cap. See
   [architecture/README.md](architecture/README.md#resource-bounds) for exactly
   what is and is not enforced
-- **Structured Reporting**: JSON output with ISO-8601 timestamps, hostname detection
-- **Clean Architecture**: Separation between data collection, rule evaluation, scoring, persistence
+- **State-change-triggered delivery**: two hashes — `posture_hash` (policy,
+  score, details) decides whether to report at all; `report_hash` (the whole
+  report, timestamp included) identifies the specific report on the wire and is
+  what both receivers verify
+- **At-least-once HTTP delivery**: retry queue with exponential backoff (1s →
+  300s, jittered), crash recovery on restart, idempotent enqueue
+- **Cross-language hash verification**: the report hash is a wire contract
+  between three independently written JSON encoders (C++, Python, Go); a
+  [differential test](tests/canonicalization/README.md) checks they agree
+  byte-for-byte, because by default they don't
 
-**Database Schema (Current):**
+**Database schema (current):**
 ```sql
 CREATE TABLE runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,7 +52,6 @@ CREATE TABLE rule_results (
   FOREIGN KEY(run_id) REFERENCES runs(id)
 );
 
--- Phase 2: Delivery layer
 CREATE TABLE retry_queue (
   run_id INTEGER PRIMARY KEY,
   report_hash TEXT UNIQUE NOT NULL,  -- event hash: whole report, incl. timestamp
@@ -64,48 +68,24 @@ CREATE TABLE retry_queue (
 );
 ```
 
-### Phase 2: Delivery Layer ✅ **COMPLETE**
+The delivery layer is HTTP-only today — no TLS (terminate at a reverse proxy
+if needed) and no authentication. `DeliveryClient` is an abstract interface
+specifically so a second transport (MQTT is the plan — see
+[docs/ROADMAP.md](docs/ROADMAP.md)) can be added without touching the retry
+queue, scoring or persistence.
 
-**HTTP Delivery Implementation** ✅ **PRODUCTION-READY**
-- ✅ Retry queue database schema (3-state: PENDING/DELIVERED/FAILED)
-- ✅ SHA-256 content hashing (standalone implementation, no OpenSSL)
-- ✅ State-change-triggered reporting: two hashes, `posture_hash` (policy, score,
-  details) decides whether to report at all, `report_hash` (whole report,
-  timestamp included) identifies the specific report on the wire
-- ✅ DeliveryClient interface with abstract base class
-- ✅ MockDeliveryClient for testing
-- ✅ HttpDeliveryClient with cpp-httplib (header-only)
-- ✅ RetryQueue manager with exponential backoff (1s → 300s)
-- ✅ Queue operations: enqueue_report, load_pending_reports, mark_delivered, mark_failed, update_retry
-- ✅ Crash recovery on startup (retries pending reports)
-- ✅ main.cpp integration (`--enable-delivery` flag)
-- ✅ FastAPI backend with hash deduplication
-- ✅ Integration test suite (all tests passing)
-- ✅ Defensive NULL checks for nullable fields
-- ✅ Dynamic timestamp handling (prevents test decay)
-- ✅ UNIQUE constraint enforcement on report_hash
-- ✅ Idempotent delivery (409 = duplicate = success)
-
-**Future Enhancement:**
-
-| Feature | Complexity | Estimate | Status |
-|---------|-----------|----------|--------|
-| MQTT Delivery Client (QoS 1) | Medium | 6-8 hours | Planned |
-
-**Delivery Usage:**
+To run the backend and try delivery locally:
 ```bash
-# Start backend
 cd backend
 pip install -r requirements.txt
 uvicorn server:app --reload --port 8000
-
-# Run agent with delivery enabled (HTTP-only; for TLS, terminate at a reverse proxy)
-.\build\Release\Sentinel.exe --enable-delivery --backend-url http://localhost:8000
 ```
+Then run the agent with `--enable-delivery` — see [Run](#run) below for the
+per-platform command.
 
 ---
 
-## Current Capabilities (Phase 1)
+## Capabilities
 
 ### Policy Evaluation
 
@@ -127,7 +107,7 @@ Policies define security rules using osquery for data collection and Lua for eva
 }
 ```
 
-### Execution Flow (Current)
+### Execution Flow
 
 1. **Load Policy**: Parse JSON policy file, validate schema
 2. **Collect Data**: Execute osquery with 10s timeout
@@ -154,34 +134,12 @@ Policies define security rules using osquery for data collection and Lua for eva
 }
 ```
 
-### Current Guarantees
-
-**Implemented (Phase 1 + Delivery Foundation):**
-
-- ✅ **Deterministic Evaluation**: Same policy + same system state = same score
-- ✅ **Crash-Safe Persistence**: SQLite WAL ensures committed data survives crashes  
-- ✅ **Restricted Execution**: Lua runtime has no file, process or network access
-  (those libraries are never opened)
-- ⚠️ **Resource Bounds**: osquery wall time and output size are capped; Lua CPU
-  time is **not** bounded. See
-  [architecture/README.md](architecture/README.md#known-gaps)
-- ✅ **Offline Operation**: Agent works without network (local evaluation only)
-- ✅ **Content Hashing**: SHA-256 over canonical JSON, byte-identical across the
-  C++ agent, Python backend and Go aggregator (verified by a differential test)
-- ✅ **State-Change-Triggered Reporting**: an evaluation whose posture matches the
-  last reported posture is not sent. Local evaluation and persistence still
-  happen on every run; only delivery is suppressed
-- ✅ **Delivery Queue Schema**: Durable retry_queue with 3-state machine
-- ✅ **Idempotent Deduplication**: UNIQUE constraint on report_hash prevents duplicates
-- ✅ **At-Least-Once Delivery**: HTTP delivery with exponential backoff (1s → 300s)
-- ✅ **Crash Recovery**: Pending reports retried on agent restart
-- ✅ **Backend Deduplication**: FastAPI backend deduplicates by SHA-256 hash
-
-**Future Enhancement:**
-
-- ⏳ **MQTT Delivery**: MQTT QoS 1 client for broker-based delivery (HTTP implemented)
-- ⏳ **TLS/HTTPS**: Encrypted transport (currently terminate TLS at reverse proxy)
-- ⏳ **Authentication**: API key/token in HTTP headers
+What the system guarantees — and, as importantly, what it doesn't (no
+ordering, no exactly-once, no liveness signal, a real unbounded-growth path in
+the retry queue) — is documented in
+[architecture/README.md](architecture/README.md#delivery), not duplicated
+here: keeping one authoritative copy is how this stays accurate as the code
+changes.
 
 ---
 
@@ -390,69 +348,19 @@ separated by platform/component rather than bundled.
 
 ---
 
-## Architecture (Current Implementation)
+## Architecture
 
-```mermaid
-graph LR
-    A[main.cpp] --> B[Policy Validator]
-    A --> C[osquery Runner<br/>10s timeout]
-    A --> D[Lua Evaluator<br/>restricted libs, no timeout]
-    A --> E[Scoring Engine]
-    A --> F[(SQLite + WAL)]
-    A --> I[JSON Report Writer]
-    A --> RQ[RetryQueue<br/>Exp. Backoff]
-    
-    F --> G[runs table]
-    F --> H[rule_results table]
-    F --> J[retry_queue table<br/>PENDING/DELIVERED/FAILED]
-    
-    RQ --> K[DeliveryClient<br/>Interface]
-    K --> L[MockDeliveryClient]
-    K --> M[HttpDeliveryClient<br/>cpp-httplib]
-    K -.planned.-> N[MqttDeliveryClient]
-    
-    M --> BE[FastAPI Backend<br/>SHA-256 Dedup]
-    
-    O[report_hasher] --> P[SHA-256<br/>standalone]
-    
-    style F fill:#e1f5ff
-    style C fill:#fff3e0
-    style D fill:#fff3e0
-    style J fill:#d4edda
-    style K fill:#d4edda
-    style O fill:#d4edda
-    style RQ fill:#d4edda
-    style M fill:#d4edda
-    style BE fill:#d4edda
-```
+Kept in one place — [architecture/README.md](architecture/README.md) — rather
+than duplicated here: system diagram, execution order, the two-hash
+suppression design, delivery state machine, data model, resource bounds, and
+a **Known gaps** section that lists what doesn't work yet as plainly as this
+page lists what does.
 
-**Legend:**
-- Solid boxes: Implemented
-- Dashed lines: Planned (MQTT)
-- Blue: Persistence layer
-- Orange: External process execution
-- Green: Delivery layer
-
-**See:** [architecture/README.md](architecture/README.md) for detailed component descriptions.
-
----
-
-## Performance Characteristics (Phase 1)
-
-**Observed during local testing (Windows 10, i7-8750H, 16GB RAM):**
-
-- **CPU**: 3% average, 25% peak (during osquery execution)
-- **Memory**: 45MB RSS
-- **Disk**: ~5ms write latency (SQLite WAL mode)
-- **Execution Time**:
-  - Policy validation: <1ms
-  - osquery execution: 50-200ms (query-dependent)
-  - Lua evaluation: <1ms per rule
-  - SQLite transaction: 1-5ms
-
-**Capacity (Single Agent):**
-- SQLite: ~10k writes/sec (far exceeds single-agent needs)
-- Evaluation rate: Limited by policy complexity and osquery queries (typically 1-10/min suffices)
+Performance numbers aren't included because none have been measured against
+the current implementation — see
+[docs/ROADMAP.md](docs/ROADMAP.md#5-measure-the-traffic-reduction-properly)
+for the plan to produce a real one, with its methodology stated up front
+rather than a number asserted after the fact.
 
 ---
 
@@ -483,45 +391,20 @@ Sentinel/
 ├── docs/
 │   ├── trade-offs.md             # Decision matrix with failure thresholds
 │   └── ROADMAP.md                # Short- and long-term plan
-├── test_delivery_foundation.cpp  # Delivery integration tests
-├── test_lua_evaluator.cpp        # Rule engine tests (no osquery required)
 ├── tests/
-│   └── canonicalization/         # Cross-language report-hash contract test
-│       ├── fixtures.json         # Shared fixtures, single source of truth
-│       ├── canon_dump.cpp/.py    # C++ and Python emitters
-│       ├── compare.py            # Driver: runs all three, diffs them
-│       └── golden.json           # Pinned hashes, catches coordinated drift
-├── reports/
-│   └── latest_report.json        # Last evaluation result
-├── sentinel_data.sqlite3         # Local database
+│   ├── test_delivery_foundation.cpp  # Delivery integration tests
+│   ├── test_lua_evaluator.cpp        # Rule engine tests (no osquery required)
+│   └── canonicalization/             # Cross-language report-hash contract test
+│       ├── fixtures.json             # Shared fixtures, single source of truth
+│       ├── canon_dump.cpp/.py        # C++ and Python emitters
+│       ├── compare.py                # Driver: runs all three, diffs them
+│       └── golden.json               # Pinned hashes, catches coordinated drift
 └── scripts/
     ├── build.ps1 / build.sh
     ├── run.ps1 / run.sh
     ├── test.ps1 / test.sh
     └── smoketest.ps1 / smoketest.sh
 ```
-
----
-
-## Why This Structure?
-
-**Demonstrates Engineering Depth:**
-- ✅ Working local evaluation engine (Phase 1)
-- ✅ Complete HTTP delivery pipeline (Phase 2: retry queue, backoff, dedup, backend)
-- ✅ Production thinking (state machines, failure modes, resource bounds)
-- ✅ Extensible architecture (MQTT can be added via DeliveryClient interface)
-
-**Honest Scope Communication:**
-- Clear separation of "implemented" vs "planned"
-- Working code first, architectural plans for future
-- No vaporware - every checked item has code behind it
-
-**Engineering Quality Signals:**
-- Crash-safe persistence (SQLite WAL)
-- Security-focused (sandboxing, timeouts, resource limits)
-- Comprehensive testing (integration test suite + CI/CD)
-- Defensive programming (NULL checks, input validation)
-- Professional documentation (architecture docs, trade-off analysis)
 
 ---
 
@@ -536,28 +419,6 @@ Sentinel/
 | **[tests/canonicalization/README.md](tests/canonicalization/README.md)** | The cross-language report-hash contract |
 | **[scripts/README.md](scripts/README.md)** | Build, run and test scripts |
 | **[backend/README.md](backend/README.md)** | Backend API reference |
-
----
-
-## Explicit Scope
-
-### This Project IS:
-
-- ✅ Working local evaluation agent with osquery + Lua (Phase 1)
-- ✅ Complete HTTP delivery pipeline with retry queue, backoff, dedup (Phase 2)
-- ✅ FastAPI backend with SHA-256 content-addressable deduplication
-- ✅ Demonstration of production-quality patterns (state machines, crash recovery)
-- ✅ Clean separation of concerns architecture
-
-### This Project is NOT:
-
-- ❌ Production distributed system
-- ❌ Multi-agent coordination platform
-- ❌ MQTT broker infrastructure
-- ❌ Horizontally scalable backend
-- ❌ Enterprise deployment tooling
-
-**Sentinel is a focused demonstration of agent architecture, durable delivery semantics, and systems engineering.**
 
 ---
 

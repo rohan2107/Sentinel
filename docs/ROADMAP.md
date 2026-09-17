@@ -149,14 +149,6 @@ Done when the README can say something like "at a 60s evaluation interval with
 posture changing every N hours, delivered bytes fall X% against unconditional
 reporting, heartbeats included" and a script reproduces it.
 
-### 6. Finish the honest-README pass
-
-Corrected so far: the Lua timeout, the resource bounds, and the scoring formula.
-Still overstated: "PRODUCTION-READY", "Comprehensive testing", and a Phase 2
-checklist that reads as more complete than the code is. This is the cheapest item
-on the list and the one that most changes how the repo reads to someone opening
-it cold.
-
 ---
 
 ## Long term
