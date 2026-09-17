@@ -1,6 +1,6 @@
 // Integration test for delivery foundation
+#include <cstdlib>
 #include <iostream>
-#include <cassert>
 #include <chrono>
 #include <iomanip>
 #include <sstream>
@@ -12,6 +12,29 @@
 #include "src/retry_queue.h"
 
 using json = nlohmann::json;
+
+// A check that survives Release builds.
+//
+// The standard library's assert() compiles to nothing when NDEBUG is
+// defined, which CMake's Release configuration always sets. This project
+// defaults to Release for a bare `cmake -S . -B build` (see CMakeLists.txt),
+// and both CI workflows build Release explicitly, so every assert() in this
+// file was silently a no-op in every CI run: the binary printed every
+// [PASS] line and exited 0 regardless of whether the condition actually
+// held, unless something crashed outright. Caught by testing a deliberately
+// reintroduced bug under --config Release and finding it "passed".
+// test_lua_evaluator.cpp was never affected -- it already used its own
+// check() helper rather than assert(), for reasons unrelated to this, and
+// that turned out to be exactly the right call.
+#define SENTINEL_ASSERT(cond) \
+    do { \
+        if (!(cond)) { \
+            std::cerr << "ASSERTION FAILED: " #cond "\n  at " << __FILE__ \
+                      << ":" << __LINE__ << "\n"; \
+            std::abort(); \
+        } \
+    } while (0)
+
 
 // Remove a test database and the two sidecar files SQLite creates in WAL mode.
 // Plain remove() leaves <db>-wal and <db>-shm behind, which litters the repo
@@ -50,15 +73,15 @@ void test_hash_determinism() {
     std::string h1 = compute_report_hash(r1);
     std::string h2 = compute_report_hash(r2);
     
-    assert(h1 == h2);
-    assert(h1.length() == 64); // SHA-256 hex is 64 chars
+    SENTINEL_ASSERT(h1 == h2);
+    SENTINEL_ASSERT(h1.length() == 64); // SHA-256 hex is 64 chars
     std::cout << "[PASS] Hashes are deterministic regardless of key order\n";
     std::cout << "       Hash: " << h1.substr(0, 16) << "...\n";
     
     // Different report, different hash
     json r3 = {{"score", 99}, {"hostname", "test"}, {"timestamp", "2025-01-01T00:00:00Z"}};
     std::string h3 = compute_report_hash(r3);
-    assert(h1 != h3);
+    SENTINEL_ASSERT(h1 != h3);
     std::cout << "[PASS] Modified content produces different hash\n\n";
 }
 
@@ -69,21 +92,21 @@ void test_mock_delivery() {
     MockDeliveryClient success_client(true);
     DeliveryResult result = success_client.send("{\"test\":true}", "abc123");
     
-    assert(result.success);
-    assert(result.status_code == 200);
-    assert(success_client.get_call_count() == 1);
-    assert(success_client.get_last_hash() == "abc123");
+    SENTINEL_ASSERT(result.success);
+    SENTINEL_ASSERT(result.status_code == 200);
+    SENTINEL_ASSERT(success_client.get_call_count() == 1);
+    SENTINEL_ASSERT(success_client.get_last_hash() == "abc123");
     std::cout << "[PASS] Mock client succeeds when configured to succeed\n";
     
     // Test failure case
     MockDeliveryClient failure_client(false);
     result = failure_client.send("{\"test\":true}", "def456");
     
-    assert(!result.success);
-    assert(result.status_code == 500);
-    assert(!result.error_message.empty());
-    assert(result.error_message == "Mock delivery failure");
-    assert(failure_client.get_call_count() == 1);
+    SENTINEL_ASSERT(!result.success);
+    SENTINEL_ASSERT(result.status_code == 500);
+    SENTINEL_ASSERT(!result.error_message.empty());
+    SENTINEL_ASSERT(result.error_message == "Mock delivery failure");
+    SENTINEL_ASSERT(failure_client.get_call_count() == 1);
     std::cout << "[PASS] Mock client fails when configured to fail\n\n";
 }
 
@@ -101,7 +124,7 @@ void test_retry_queue() {
     json details = {{"firewall_enabled", true}, {"av_installed", true}};
     db.persist_run("2026-02-18T12:00:00.000Z", "test-host", "test-policy", 100, details);
     int run_id = db.get_last_run_id();
-    assert(run_id > 0);
+    SENTINEL_ASSERT(run_id > 0);
     std::cout << "[PASS] Persisted run with ID: " << run_id << "\n";
     
     // Create report and hash
@@ -122,17 +145,17 @@ void test_retry_queue() {
     
     // Load pending reports
     auto pending = db.load_pending_reports();
-    assert(pending.size() == 1);
-    assert(pending[0].run_id == run_id);
-    assert(pending[0].report_hash == report_hash);
-    assert(pending[0].state == "PENDING");
-    assert(pending[0].attempts == 0);
+    SENTINEL_ASSERT(pending.size() == 1);
+    SENTINEL_ASSERT(pending[0].run_id == run_id);
+    SENTINEL_ASSERT(pending[0].report_hash == report_hash);
+    SENTINEL_ASSERT(pending[0].state == "PENDING");
+    SENTINEL_ASSERT(pending[0].attempts == 0);
     std::cout << "[PASS] Loaded 1 pending report\n";
     
     // Mark as delivered
     db.mark_delivered(run_id, "2026-02-18T12:01:00.000Z");
     pending = db.load_pending_reports();
-    assert(pending.size() == 0);
+    SENTINEL_ASSERT(pending.size() == 0);
     std::cout << "[PASS] Marked as delivered, no longer pending\n";
     
     // Test retry flow with new report
@@ -148,20 +171,20 @@ void test_retry_queue() {
     db.enqueue_report(run_id2, report2.dump(), hash2, compute_posture_hash(report2));
     
     pending = db.load_pending_reports();
-    assert(pending.size() == 1);
+    SENTINEL_ASSERT(pending.size() == 1);
     std::cout << "[PASS] Second report enqueued\n";
     
     // Simulate retry with backoff (compute future timestamp dynamically)
     std::string future_time = get_future_timestamp(1); // 1 hour ahead
     db.update_retry(run_id2, 1, future_time, "Network timeout");
     pending = db.load_pending_reports();
-    assert(pending.size() == 0); // Not ready yet (next_retry_at is in future)
+    SENTINEL_ASSERT(pending.size() == 0); // Not ready yet (next_retry_at is in future)
     std::cout << "[PASS] Updated retry metadata, not yet ready\n";
     
     // Simulate max retries exceeded
     db.mark_failed(run_id2, "2026-02-18T12:15:00.000Z", "Max retries exceeded");
     pending = db.load_pending_reports();
-    assert(pending.size() == 0); // Failed, no longer pending
+    SENTINEL_ASSERT(pending.size() == 0); // Failed, no longer pending
     std::cout << "[PASS] Marked as failed after max retries\n";
     
     // Test UNIQUE constraint on report_hash
@@ -176,8 +199,8 @@ void test_retry_queue() {
         const size_t before = db.load_pending_reports().size();
         const bool inserted = db.enqueue_report(run_id3, report2.dump(), duplicate_hash,
                                                 compute_posture_hash(report2));
-        assert(!inserted);
-        assert(db.load_pending_reports().size() == before);
+        SENTINEL_ASSERT(!inserted);
+        SENTINEL_ASSERT(db.load_pending_reports().size() == before);
         std::cout << "[PASS] Duplicate report_hash is a no-op, not an error\n";
     }
     
@@ -214,7 +237,7 @@ void test_retry_queue_manager() {
         queue.enqueue(run_id, report.dump(), hash, compute_posture_hash(report));
         int delivered = queue.process_pending();
         
-        assert(delivered == 1);
+        SENTINEL_ASSERT(delivered == 1);
         std::cout << "[PASS] RetryQueue delivered 1 report successfully\n";
     }
     
@@ -247,10 +270,10 @@ void test_retry_queue_manager() {
         
         // Verify the row is actually in FAILED state (not just absent from pending)
         std::string state = db.get_queue_state(run_id2);
-        assert(state == "FAILED");
+        SENTINEL_ASSERT(state == "FAILED");
         
         auto pending = db.load_pending_reports();
-        assert(pending.size() == 0);
+        SENTINEL_ASSERT(pending.size() == 0);
         std::cout << "[PASS] RetryQueue respects max_retries (state=FAILED verified)\n";
     }
     
@@ -288,7 +311,7 @@ void test_integration() {
     
     // 4. Load pending
     auto pending = db.load_pending_reports();
-    assert(pending.size() == 1);
+    SENTINEL_ASSERT(pending.size() == 1);
     
     // 5. Attempt delivery with mock client
     MockDeliveryClient client(true);
@@ -301,7 +324,7 @@ void test_integration() {
     
     // 7. Verify no longer pending
     pending = db.load_pending_reports();
-    assert(pending.size() == 0);
+    SENTINEL_ASSERT(pending.size() == 0);
     
     std::cout << "[PASS] Full flow: persist -> hash -> enqueue -> deliver -> mark delivered\n";
     std::cout << "[PASS] Report successfully delivered and marked\n\n";
@@ -331,20 +354,20 @@ void test_posture_suppression() {
     json r1 = make_report("p", 100, details_a, "2026-09-16T10:00:00.000Z");
     json r2 = make_report("p", 100, details_a, "2026-09-16T11:00:00.000Z");
 
-    assert(compute_report_hash(r1) != compute_report_hash(r2));
+    SENTINEL_ASSERT(compute_report_hash(r1) != compute_report_hash(r2));
     std::cout << "[PASS] Event hash differs for identical posture at different times\n";
-    assert(compute_posture_hash(r1) == compute_posture_hash(r2));
+    SENTINEL_ASSERT(compute_posture_hash(r1) == compute_posture_hash(r2));
     std::cout << "[PASS] Posture hash is stable across timestamps\n";
 
     // Hostname is identity, not posture: renaming a machine is not a state change.
     json renamed = r1;
     renamed["hostname"] = "renamed-host";
-    assert(compute_posture_hash(renamed) == compute_posture_hash(r1));
+    SENTINEL_ASSERT(compute_posture_hash(renamed) == compute_posture_hash(r1));
     std::cout << "[PASS] Posture hash ignores hostname\n";
 
     // A genuine posture change must be visible.
     json changed = make_report("p", 80, details_b, "2026-09-16T10:00:00.000Z");
-    assert(compute_posture_hash(changed) != compute_posture_hash(r1));
+    SENTINEL_ASSERT(compute_posture_hash(changed) != compute_posture_hash(r1));
     std::cout << "[PASS] Posture hash changes when details/score change\n";
 
     // --- Suppression decision over the queue -------------------------------
@@ -353,7 +376,7 @@ void test_posture_suppression() {
     DB db(test_db);
     db.init_schema();
 
-    assert(db.last_reported_posture_hash().empty());
+    SENTINEL_ASSERT(db.last_reported_posture_hash().empty());
     std::cout << "[PASS] No previous posture on a fresh database\n";
 
     auto persist_and_enqueue = [&db](const json& report) {
@@ -371,48 +394,48 @@ void test_posture_suppression() {
 
     // Posture A reported.
     auto [id_a, ins_a] = persist_and_enqueue(r1);
-    assert(ins_a);
-    assert(db.last_reported_posture_hash() == compute_posture_hash(r1));
+    SENTINEL_ASSERT(ins_a);
+    SENTINEL_ASSERT(db.last_reported_posture_hash() == compute_posture_hash(r1));
     std::cout << "[PASS] Last reported posture tracks the queued report\n";
 
     // Same posture an hour later: the agent would suppress this. Verify the
     // decision input, i.e. that the stored posture equals the new one.
-    assert(db.last_reported_posture_hash() == compute_posture_hash(r2));
+    SENTINEL_ASSERT(db.last_reported_posture_hash() == compute_posture_hash(r2));
     std::cout << "[PASS] Unchanged posture compares equal, so delivery is skipped\n";
 
     // Still visible after delivery succeeds.
     db.mark_delivered(id_a, "2026-09-16T10:00:01.000Z");
-    assert(db.last_reported_posture_hash() == compute_posture_hash(r1));
+    SENTINEL_ASSERT(db.last_reported_posture_hash() == compute_posture_hash(r1));
     std::cout << "[PASS] DELIVERED reports still count as reported\n";
 
     // --- Flapping: A -> B -> A must all be reported ------------------------
     json rb = make_report("p", 80, details_b, "2026-09-16T11:00:00.000Z");
     auto [id_b, ins_b] = persist_and_enqueue(rb);
-    assert(ins_b);
+    SENTINEL_ASSERT(ins_b);
     db.mark_delivered(id_b, "2026-09-16T11:00:01.000Z");
-    assert(db.last_reported_posture_hash() == compute_posture_hash(rb));
+    SENTINEL_ASSERT(db.last_reported_posture_hash() == compute_posture_hash(rb));
 
     json ra2 = make_report("p", 100, details_a, "2026-09-16T12:00:00.000Z");
     // Posture returned to A. It differs from the last reported posture (B), so
     // it is reported again -- the transition back is not lost.
-    assert(db.last_reported_posture_hash() != compute_posture_hash(ra2));
+    SENTINEL_ASSERT(db.last_reported_posture_hash() != compute_posture_hash(ra2));
     auto [id_a2, ins_a2] = persist_and_enqueue(ra2);
-    assert(ins_a2);
+    SENTINEL_ASSERT(ins_a2);
     std::cout << "[PASS] Flapping A->B->A reports the return to A\n";
     db.mark_delivered(id_a2, "2026-09-16T12:00:01.000Z");
 
     // --- A permanently FAILED report must not suppress the next attempt ----
     json rc = make_report("p", 60, {{"firewall_enabled", false}}, "2026-09-16T13:00:00.000Z");
     auto [id_c, ins_c] = persist_and_enqueue(rc);
-    assert(ins_c);
-    assert(db.last_reported_posture_hash() == compute_posture_hash(rc));
+    SENTINEL_ASSERT(ins_c);
+    SENTINEL_ASSERT(db.last_reported_posture_hash() == compute_posture_hash(rc));
 
     db.mark_failed(id_c, "2026-09-16T13:05:00.000Z", "Max retries exceeded");
     // Delivery was abandoned, so posture C was never actually reported. The
     // query excludes FAILED rows, so the last reported posture falls back to A
     // and the next evaluation of C will be enqueued again -- no reset needed.
-    assert(db.last_reported_posture_hash() != compute_posture_hash(rc));
-    assert(db.last_reported_posture_hash() == compute_posture_hash(ra2));
+    SENTINEL_ASSERT(db.last_reported_posture_hash() != compute_posture_hash(rc));
+    SENTINEL_ASSERT(db.last_reported_posture_hash() == compute_posture_hash(ra2));
     std::cout << "[PASS] FAILED delivery does not suppress the next report\n";
 
     std::cout << "\n";
