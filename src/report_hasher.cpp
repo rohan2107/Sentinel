@@ -117,3 +117,17 @@ std::string compute_report_hash(const nlohmann::json& report) {
     
     return oss.str();
 }
+
+std::string compute_posture_hash(const nlohmann::json& report) {
+    // Reuses compute_report_hash so both hashes share one canonicalizer; the
+    // only difference is what is fed to it. Missing fields fall back to
+    // defaults rather than throwing: a malformed report should still produce a
+    // stable hash so it can be reported rather than silently dropped.
+    nlohmann::json posture = {
+        {"policy", report.value("policy", std::string{})},
+        {"score", report.value("score", 0)},
+        {"details", report.contains("details") ? report.at("details")
+                                               : nlohmann::json::object()},
+    };
+    return compute_report_hash(posture);
+}

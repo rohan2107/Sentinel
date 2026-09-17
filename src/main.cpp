@@ -311,28 +311,59 @@ int main(int argc, char** argv) {
         // Delivery layer integration (if enabled)
         if (opts.enable_delivery && run_id > 0) {
             try {
-                // Compute report hash
-                std::string report_hash = compute_report_hash(report);
-                spdlog::info("Report hash: {}...", report_hash.substr(0, 16));
-                
-                // Create HTTP delivery client
+                // Two distinct hashes, answering two distinct questions:
+                //   event_hash   - "which report is this?" Covers the whole
+                //                  report including timestamp. Goes on the wire;
+                //                  receivers recompute it to verify.
+                //   posture_hash - "has the state changed?" Covers policy, score
+                //                  and details only. Agent-local, never sent.
+                const std::string event_hash = compute_report_hash(report);
+                const std::string posture_hash = compute_posture_hash(report);
+                spdlog::info("Event hash:   {}...", event_hash.substr(0, 16));
+                spdlog::info("Posture hash: {}...", posture_hash.substr(0, 16));
+
                 auto client = std::make_unique<HttpDeliveryClient>(opts.backend_url, 30);
-                
-                // Create retry queue manager
                 RetryQueue queue(db, std::move(client), 10);
-                
-                // Enqueue report for delivery
-                queue.enqueue(run_id, report.dump(), report_hash);
-                spdlog::info("Enqueued report for delivery");
-                
-                // Attempt immediate delivery
-                int delivered = queue.process_pending();
-                if (delivered > 0) {
-                    spdlog::info("Successfully delivered {} report(s)", delivered);
+
+                // State-change-triggered reporting: send only when posture
+                // differs from the last posture we committed to reporting.
+                // Unconditional reporting sends an identical payload on every
+                // evaluation, which is the bulk of the traffic on a fleet whose
+                // posture is almost always static.
+                const std::string last_posture = queue.last_reported_posture();
+                if (!last_posture.empty() && last_posture == posture_hash) {
+                    spdlog::info("Posture unchanged since last report "
+                                 "(posture_hash={}...), skipping delivery",
+                                 posture_hash.substr(0, 16));
+                    // Still process the queue: an earlier report may be waiting
+                    // on backoff, and suppressing a new one must not stall it.
+                    int delivered = queue.process_pending();
+                    if (delivered > 0) {
+                        spdlog::info("Delivered {} backlogged report(s)", delivered);
+                    }
                 } else {
-                    spdlog::warn("Delivery deferred, will retry with backoff");
+                    if (last_posture.empty()) {
+                        spdlog::info("No previous report; reporting initial posture");
+                    } else {
+                        spdlog::info("Posture changed ({}... -> {}...), reporting",
+                                     last_posture.substr(0, 16),
+                                     posture_hash.substr(0, 16));
+                    }
+
+                    if (queue.enqueue(run_id, report.dump(), event_hash, posture_hash)) {
+                        spdlog::info("Enqueued report for delivery");
+                    } else {
+                        spdlog::info("Report already queued (event_hash seen), not re-queued");
+                    }
+
+                    int delivered = queue.process_pending();
+                    if (delivered > 0) {
+                        spdlog::info("Successfully delivered {} report(s)", delivered);
+                    } else {
+                        spdlog::warn("Delivery deferred, will retry with backoff");
+                    }
                 }
-                
+
             } catch (const std::exception& e) {
                 spdlog::error("Delivery failed: {}", e.what());
             }

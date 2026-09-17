@@ -4,6 +4,7 @@
 #include <chrono>
 #include <iomanip>
 #include <sstream>
+#include <string>
 #include <nlohmann/json.hpp>
 #include "src/db.h"
 #include "src/report_hasher.h"
@@ -24,7 +25,7 @@ std::string get_future_timestamp(int hours_ahead) {
 #else
     gmtime_r(&future_time_t, &tm_utc);
 #endif
-    
+
     std::ostringstream oss;
     oss << std::put_time(&tm_utc, "%Y-%m-%d %H:%M:%S");
     return oss.str();
@@ -107,7 +108,7 @@ void test_retry_queue() {
     std::cout << "[PASS] Computed report hash: " << report_hash.substr(0, 16) << "...\n";
     
     // Enqueue report
-    db.enqueue_report(run_id, report_json, report_hash);
+    db.enqueue_report(run_id, report_json, report_hash, compute_posture_hash(report));
     std::cout << "[PASS] Enqueued report for delivery\n";
     
     // Load pending reports
@@ -135,7 +136,7 @@ void test_retry_queue() {
         {"score", 90}
     };
     std::string hash2 = compute_report_hash(report2);
-    db.enqueue_report(run_id2, report2.dump(), hash2);
+    db.enqueue_report(run_id2, report2.dump(), hash2, compute_posture_hash(report2));
     
     pending = db.load_pending_reports();
     assert(pending.size() == 1);
@@ -159,12 +160,16 @@ void test_retry_queue() {
     int run_id3 = db.get_last_run_id();
     std::string duplicate_hash = hash2; // Reuse hash from run_id2
     
-    try {
-        db.enqueue_report(run_id3, report2.dump(), duplicate_hash);
-        assert(false); // Should not reach here
-    } catch (const std::runtime_error& e) {
-        // Expected: UNIQUE constraint violation
-        std::cout << "[PASS] Duplicate report_hash correctly rejected\n";
+    // Re-queuing an already-queued report_hash is idempotent, not an error: an
+    // at-least-once producer does exactly this when unsure the first attempt
+    // landed. It returns false and inserts nothing, rather than throwing.
+    {
+        const size_t before = db.load_pending_reports().size();
+        const bool inserted = db.enqueue_report(run_id3, report2.dump(), duplicate_hash,
+                                                compute_posture_hash(report2));
+        assert(!inserted);
+        assert(db.load_pending_reports().size() == before);
+        std::cout << "[PASS] Duplicate report_hash is a no-op, not an error\n";
     }
     
     std::cout << "\n";
@@ -197,7 +202,7 @@ void test_retry_queue_manager() {
         auto client = std::make_unique<MockDeliveryClient>(true);
         RetryQueue queue(db, std::move(client), 5);
         
-        queue.enqueue(run_id, report.dump(), hash);
+        queue.enqueue(run_id, report.dump(), hash, compute_posture_hash(report));
         int delivered = queue.process_pending();
         
         assert(delivered == 1);
@@ -219,7 +224,7 @@ void test_retry_queue_manager() {
         auto client = std::make_unique<MockDeliveryClient>(false);
         RetryQueue queue(db, std::move(client), 3); // max 3 retries
         
-        queue.enqueue(run_id2, report2.dump(), hash2);
+        queue.enqueue(run_id2, report2.dump(), hash2, compute_posture_hash(report2));
         
         // Process once - first attempt fails, schedules future retry
         queue.process_pending();
@@ -270,7 +275,7 @@ void test_integration() {
     std::string report_hash = compute_report_hash(report);
     
     // 3. Enqueue for delivery
-    db.enqueue_report(run_id, report.dump(), report_hash);
+    db.enqueue_report(run_id, report.dump(), report_hash, compute_posture_hash(report));
     
     // 4. Load pending
     auto pending = db.load_pending_reports();
@@ -295,6 +300,116 @@ void test_integration() {
     remove(test_db);
 }
 
+// Helper: build a report with the given posture and timestamp.
+static json make_report(const std::string& policy, int score,
+                        const json& details, const std::string& ts) {
+    return json{
+        {"policy", policy},
+        {"score", score},
+        {"details", details},
+        {"timestamp", ts},
+        {"hostname", "test-host"},
+    };
+}
+
+void test_posture_suppression() {
+    std::cout << "=== Testing Posture Hash and Suppression ===\n";
+
+    const json details_a = {{"firewall_enabled", true}, {"av_installed", true}};
+    const json details_b = {{"firewall_enabled", false}, {"av_installed", true}};
+
+    // --- The bug this replaces: the event hash changes every run ------------
+    json r1 = make_report("p", 100, details_a, "2026-09-16T10:00:00.000Z");
+    json r2 = make_report("p", 100, details_a, "2026-09-16T11:00:00.000Z");
+
+    assert(compute_report_hash(r1) != compute_report_hash(r2));
+    std::cout << "[PASS] Event hash differs for identical posture at different times\n";
+    assert(compute_posture_hash(r1) == compute_posture_hash(r2));
+    std::cout << "[PASS] Posture hash is stable across timestamps\n";
+
+    // Hostname is identity, not posture: renaming a machine is not a state change.
+    json renamed = r1;
+    renamed["hostname"] = "renamed-host";
+    assert(compute_posture_hash(renamed) == compute_posture_hash(r1));
+    std::cout << "[PASS] Posture hash ignores hostname\n";
+
+    // A genuine posture change must be visible.
+    json changed = make_report("p", 80, details_b, "2026-09-16T10:00:00.000Z");
+    assert(compute_posture_hash(changed) != compute_posture_hash(r1));
+    std::cout << "[PASS] Posture hash changes when details/score change\n";
+
+    // --- Suppression decision over the queue -------------------------------
+    const char* test_db = "posture_test.db";
+    remove(test_db);
+    DB db(test_db);
+    db.init_schema();
+
+    assert(db.last_reported_posture_hash().empty());
+    std::cout << "[PASS] No previous posture on a fresh database\n";
+
+    auto persist_and_enqueue = [&db](const json& report) {
+        db.persist_run(report.at("timestamp").get<std::string>(),
+                       report.at("hostname").get<std::string>(),
+                       report.at("policy").get<std::string>(),
+                       report.at("score").get<int>(),
+                       report.at("details"));
+        const int run_id = db.get_last_run_id();
+        const bool inserted = db.enqueue_report(run_id, report.dump(),
+                                                compute_report_hash(report),
+                                                compute_posture_hash(report));
+        return std::make_pair(run_id, inserted);
+    };
+
+    // Posture A reported.
+    auto [id_a, ins_a] = persist_and_enqueue(r1);
+    assert(ins_a);
+    assert(db.last_reported_posture_hash() == compute_posture_hash(r1));
+    std::cout << "[PASS] Last reported posture tracks the queued report\n";
+
+    // Same posture an hour later: the agent would suppress this. Verify the
+    // decision input, i.e. that the stored posture equals the new one.
+    assert(db.last_reported_posture_hash() == compute_posture_hash(r2));
+    std::cout << "[PASS] Unchanged posture compares equal, so delivery is skipped\n";
+
+    // Still visible after delivery succeeds.
+    db.mark_delivered(id_a, "2026-09-16T10:00:01.000Z");
+    assert(db.last_reported_posture_hash() == compute_posture_hash(r1));
+    std::cout << "[PASS] DELIVERED reports still count as reported\n";
+
+    // --- Flapping: A -> B -> A must all be reported ------------------------
+    json rb = make_report("p", 80, details_b, "2026-09-16T11:00:00.000Z");
+    auto [id_b, ins_b] = persist_and_enqueue(rb);
+    assert(ins_b);
+    db.mark_delivered(id_b, "2026-09-16T11:00:01.000Z");
+    assert(db.last_reported_posture_hash() == compute_posture_hash(rb));
+
+    json ra2 = make_report("p", 100, details_a, "2026-09-16T12:00:00.000Z");
+    // Posture returned to A. It differs from the last reported posture (B), so
+    // it is reported again -- the transition back is not lost.
+    assert(db.last_reported_posture_hash() != compute_posture_hash(ra2));
+    auto [id_a2, ins_a2] = persist_and_enqueue(ra2);
+    assert(ins_a2);
+    std::cout << "[PASS] Flapping A->B->A reports the return to A\n";
+    db.mark_delivered(id_a2, "2026-09-16T12:00:01.000Z");
+
+    // --- A permanently FAILED report must not suppress the next attempt ----
+    json rc = make_report("p", 60, {{"firewall_enabled", false}}, "2026-09-16T13:00:00.000Z");
+    auto [id_c, ins_c] = persist_and_enqueue(rc);
+    assert(ins_c);
+    assert(db.last_reported_posture_hash() == compute_posture_hash(rc));
+
+    db.mark_failed(id_c, "2026-09-16T13:05:00.000Z", "Max retries exceeded");
+    // Delivery was abandoned, so posture C was never actually reported. The
+    // query excludes FAILED rows, so the last reported posture falls back to A
+    // and the next evaluation of C will be enqueued again -- no reset needed.
+    assert(db.last_reported_posture_hash() != compute_posture_hash(rc));
+    assert(db.last_reported_posture_hash() == compute_posture_hash(ra2));
+    std::cout << "[PASS] FAILED delivery does not suppress the next report\n";
+
+    std::cout << "\n";
+    remove(test_db);
+}
+
 int main() {
     std::cout << "\n";
     std::cout << "===================================================\n";
@@ -305,6 +420,7 @@ int main() {
         test_hash_determinism();
         test_mock_delivery();
         test_retry_queue();
+        test_posture_suppression();
         test_retry_queue_manager();
         test_integration();
         
@@ -317,7 +433,10 @@ int main() {
         std::cout << "  - MockDeliveryClient works correctly\n";
         std::cout << "  - Retry queue operations functional\n";
         std::cout << "  - RetryQueue manager with backoff works\n";
-        std::cout << "  - UNIQUE constraint on report_hash enforced\n";
+        std::cout << "  - Duplicate report_hash enqueue is idempotent\n";
+        std::cout << "  - Posture hash excludes timestamp and hostname\n";
+        std::cout << "  - Unchanged posture suppresses delivery\n";
+        std::cout << "  - Flapping and failed deliveries are re-reported\n";
         std::cout << "  - Dynamic timestamp handling prevents test decay\n";
         std::cout << "  - End-to-end integration verified\n";
         std::cout << "  - Ready for production HTTP delivery\n\n";
@@ -327,7 +446,8 @@ int main() {
     }
     
     // Final cleanup: remove any leftover test databases
-    const char* test_dbs[] = {"test_sentinel.db", "retry_queue_test.db", "integration_test.db"};
+    const char* test_dbs[] = {"test_sentinel.db", "retry_queue_test.db", "integration_test.db",
+                               "posture_test.db"};
     for (const char* db_name : test_dbs) {
         remove(db_name);
     }

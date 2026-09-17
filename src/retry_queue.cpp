@@ -19,8 +19,15 @@ RetryQueue::RetryQueue(DB& db, std::unique_ptr<DeliveryClient> client, int max_r
     std::srand(static_cast<unsigned>(std::time(nullptr)));
 }
 
-void RetryQueue::enqueue(int run_id, const std::string& report_json, const std::string& report_hash) {
-    db_.enqueue_report(run_id, report_json, report_hash);
+bool RetryQueue::enqueue(int run_id,
+                         const std::string& report_json,
+                         const std::string& report_hash,
+                         const std::string& posture_hash) {
+    return db_.enqueue_report(run_id, report_json, report_hash, posture_hash);
+}
+
+std::string RetryQueue::last_reported_posture() {
+    return db_.last_reported_posture_hash();
 }
 
 std::vector<QueuedReport> RetryQueue::load_pending() {

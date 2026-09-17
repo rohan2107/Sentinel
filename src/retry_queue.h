@@ -12,8 +12,16 @@ class RetryQueue {
 public:
     RetryQueue(DB& db, std::unique_ptr<DeliveryClient> client, int max_retries = 10);
     
-    // Enqueue new report for delivery (persists to DB)
-    void enqueue(int run_id, const std::string& report_json, const std::string& report_hash);
+    // Enqueue new report for delivery (persists to DB).
+    // Returns false if this report_hash was already queued; see
+    // DB::enqueue_report for why a duplicate is not an error.
+    bool enqueue(int run_id,
+                 const std::string& report_json,
+                 const std::string& report_hash,
+                 const std::string& posture_hash);
+
+    // Posture hash of the most recently reported run, or "" if none.
+    std::string last_reported_posture();
     
     // Process all pending reports ready for delivery
     // Returns number of reports successfully delivered
