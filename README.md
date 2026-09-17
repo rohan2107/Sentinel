@@ -190,25 +190,20 @@ Policies define security rules using osquery for data collection and Lua for eva
 | Platform | Build | Agent runs | CI | Policy |
 |----------|-------|-----------|----|--------|
 | macOS (Apple Silicon / Intel) | Homebrew + CMake | Yes | [`macos-build.yml`](.github/workflows/macos-build.yml) — every push/PR | [`policies/macos_policy.json`](policies/macos_policy.json) |
-| Windows (x64) | vcpkg + MSBuild | Yes | [`windows-build.yml`](.github/workflows/windows-build.yml) — manual only | [`policies/sample_policy.json`](policies/sample_policy.json) |
+| Windows (x64) | vcpkg + MSBuild | Yes | [`windows-build.yml`](.github/workflows/windows-build.yml) — every push/PR | [`policies/sample_policy.json`](policies/sample_policy.json) |
 | Linux | Homebrew/apt + CMake | Untested | None | — |
 
 Presets exist for Linux and the agent source is POSIX-clean, but it has not been
 built or run there, so it is listed as untested rather than supported.
 
-**Windows is best-effort, not continuously verified.** Active development is
-macOS-only now, so `windows-build.yml` runs on demand (the "Run workflow"
-button in the Actions tab) rather than on every push. This is a deliberate
-choice, not neglect: the agent itself is genuinely cross-platform — only about
-10% of its source sits inside `#ifdef _WIN32`, almost entirely in
-`osquery_runner.cpp`'s process-spawning code, which necessarily differs by OS.
-Both real failures this workflow has hit were in the Windows *toolchain*
-(vcpkg version resolution, a GitHub Actions caching interaction), not in that
-code, and diagnosing either one requires reasoning from CI logs alone with no
-Windows machine to reproduce on. Gating every commit on a platform that can
-only be debugged blind isn't worth what it costs; running it deliberately —
-before a release, when touching Windows-relevant paths, or if this project
-picks multi-platform work back up — is. See
+Both supported platforms build on every push and PR to `master`, not just
+when someone remembers to check. The agent genuinely is cross-platform — only
+about 10% of its source sits inside `#ifdef _WIN32`, almost entirely in
+`osquery_runner.cpp`'s process-spawning code, which necessarily differs by
+OS — and continuous CI on both is what turns that from an intention into a
+verified claim. Active development is macOS-only, which means Windows CI is
+the only thing that would catch a POSIX-only regression introduced from that
+work before it ships. See
 [architecture/README.md](architecture/README.md#platform-and-dependencies).
 
 Policies are **not** portable across platforms: each rule carries an osquery
@@ -380,15 +375,16 @@ contract, the two documented cases that lie outside it, and why.
 | Workflow | Runner | Trigger | Covers |
 |----------|--------|---------|--------|
 | [`macos-build.yml`](.github/workflows/macos-build.yml) | `macos-latest` | every push/PR | Homebrew build, ctest, the canonicalization differential test, agent start-up check, artifact upload |
+| [`windows-build.yml`](.github/workflows/windows-build.yml) | `windows-latest` | every push/PR | vcpkg build, both test binaries, artifact upload |
 | [`validate-backend.yml`](.github/workflows/validate-backend.yml) | `ubuntu-latest` | every push/PR touching `backend/` or `policies/` | backend syntax check **and import check** (imports `server.py`, so a FastAPI startup error is caught — syntax-only checking missed exactly this bug once), policy JSON validation |
 | [`go-aggregator.yml`](.github/workflows/go-aggregator.yml) | `ubuntu-latest` | every push/PR touching `go-aggregator/` | build, vet, `go test -race`, golangci-lint, govulncheck |
-| [`windows-build.yml`](.github/workflows/windows-build.yml) | `windows-latest` | **manual only** (`workflow_dispatch`) | vcpkg build, both test binaries, artifact upload |
 
 `validate-backend` used to be a second job inside `windows-build.yml`, despite
-having nothing to do with Windows, so making that workflow manual-only would
-have silently taken backend validation down with it. Split out so it keeps
-running automatically. See the Platform Support note above for why
-`windows-build.yml` itself is manual.
+having nothing to do with Windows — a coupling that would have mattered a lot
+if Windows CI had gone manual-only, which it briefly did before reverting
+back to always-on below. Kept split out regardless: it is better hygiene for
+each workflow to own one concern, matching how the other three are already
+separated by platform/component rather than bundled.
 
 ---
 

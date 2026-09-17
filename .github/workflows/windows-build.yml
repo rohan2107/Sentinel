@@ -1,27 +1,26 @@
 name: Windows Build (CMake + vcpkg)
 
-# Manual-only, deliberately. The C++ agent is genuinely cross-platform (only
-# ~10% of its source is inside #ifdef _WIN32, concentrated almost entirely in
-# osquery_runner.cpp's process-spawning code, which necessarily differs by
-# OS), but this workflow's two real failures were never in that code -- one
-# was vcpkg's own version-resolution semantics, the other was a GitHub
-# Actions cache/batch-script interaction. Both had to be diagnosed and fixed
-# blind, from CI logs alone, with no Windows machine to reproduce on.
-#
-# Active development is macOS-only going forward. Running this automatically
-# on every push would mean it silently re-breaks on Windows/vcpkg-ecosystem
-# drift that has nothing to do with the change being made, and gates merges
-# on a platform nobody can currently debug directly. Run it deliberately --
-# before a release, when actually touching Windows-relevant paths (CMakeLists
-# .txt, vcpkg.json, scripts/*.ps1, src/), or if this project picks back up
-# multi-platform work -- via the "Run workflow" button, not automatically.
-#
-# See architecture/README.md and README.md's Platform Support table for the
-# same reasoning documented alongside the rest of the platform story, and
-# validate-backend.yml for the job that used to live in this file: it has
-# nothing to do with Windows and stayed on its normal automatic trigger.
+# Required, on every push/PR to master, same as the other platform workflows.
+# This briefly ran as workflow_dispatch-only (manual) on the theory that
+# active development had moved to macOS and Windows could not be debugged
+# locally. Reverted: that conflated a one-time bootstrapping cost with an
+# ongoing one. Both real failures this workflow hit were structural bugs with
+# durable fixes, not recurring fragility -- an unpinned vcpkg dependency
+# (fixed by builtin-baseline + overrides in vcpkg.json) and a stale-cache
+# skip-clone interaction (fixed by the unconditional `git fetch` below) -- and
+# a project that claims to be cross-platform needs continuous evidence of
+# that, not a claim nobody is checking. The C++ agent genuinely is
+# cross-platform (only ~10% of its source sits inside #ifdef _WIN32, almost
+# entirely osquery_runner.cpp's process-spawning code, which necessarily
+# differs by OS) precisely because CI keeps proving it; the moment that stops
+# running automatically, a POSIX-only regression introduced from macOS-only
+# work would sit undetected until someone happened to run this by hand.
 on:
-  workflow_dispatch:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch: {}
 
 jobs:
   build-windows:

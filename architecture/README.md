@@ -364,22 +364,27 @@ failure re-reporting), `test_lua_evaluator.cpp` (rule logic, no osquery needed),
 
 ## Platform and dependencies
 
-macOS (Homebrew + CMake) is built and tested on every push. Windows (x64,
-vcpkg + MSBuild) builds and runs — the source is genuinely cross-platform, not
-just nominally so: only about 10% of it sits inside `#ifdef _WIN32`, almost
+macOS (Homebrew + CMake) and Windows (x64, vcpkg + MSBuild) are both built and
+tested on every push. The source is genuinely cross-platform, not just
+nominally so: only about 10% of it sits inside `#ifdef _WIN32`, almost
 entirely in `osquery_runner.cpp`'s process-spawning code (`CreateProcess` vs
-`posix_spawn`), which necessarily differs by OS. But it is no longer
-continuously verified: `windows-build.yml` runs on demand
-(`workflow_dispatch`), not on push, because active development is macOS-only
-now and both real failures that workflow has hit were in the Windows
-*toolchain* (vcpkg's version resolution, a GitHub Actions cache/batch-script
-interaction), not in this code, diagnosed blind from CI logs with no Windows
-machine available to reproduce on. Architecting for portability and
-continuously verifying only what can actually be tested are different
-commitments; this project keeps the first and is explicit about not claiming
-the second. Linux presets exist but are untested. Policies are **not**
-portable regardless of platform support — each rule carries an osquery query,
-and the tables differ per OS.
+`posix_spawn`), which necessarily differs by OS.
+
+Windows CI briefly went manual-only (`workflow_dispatch`) on the reasoning
+that active development is macOS-only and both real failures that workflow
+had hit were in the Windows *toolchain* rather than this code — an unpinned
+vcpkg dependency silently drifting to a new upstream version, and a stale
+GitHub Actions cache skipping `git clone` entirely and never fetching a newly
+referenced commit. That was reverted. Both were one-time bootstrapping bugs
+with durable fixes (`builtin-baseline` + `overrides` in `vcpkg.json`; an
+unconditional `git fetch` in the workflow), not ongoing fragility, and a
+project that states a cross-platform claim needs continuous evidence for it,
+not a claim nobody is checking after the first two failures got fixed. It is
+also the only thing that would catch a POSIX-only regression introduced from
+macOS-only work before it ships, rather than whenever someone next happens to
+run the workflow by hand. Linux presets exist but are untested. Policies are
+**not** portable regardless of platform support — each rule carries an osquery
+query, and the tables differ per OS.
 
 Lua is pinned to 5.4 on both platforms because policy rules are Lua source
 shipped as data, so the language version is part of the policy contract. CMake
