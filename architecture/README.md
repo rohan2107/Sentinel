@@ -64,7 +64,7 @@ Order matters here and differs from what you might assume:
    and evaluation continues to the next rule.
 4. Score: `base_score`, minus the weight of every failed rule, clamped to 0–100.
 5. Assemble the report and print it to stdout.
-6. **Write `reports/latest_report.json`** — this happens *before* the database
+7. **Write `reports/latest_report.json`** — this happens *before* the database
    write, so a report file can exist for a run that was never persisted.
 7. Persist to SQLite: `runs` + `features` in one `BEGIN IMMEDIATE`/`COMMIT`.
 8. If delivery is enabled, decide whether to report at all (below), then enqueue
@@ -316,18 +316,23 @@ Ordered by how much they matter:
 2. **No heartbeat** — with suppression active, silence cannot distinguish a
    healthy agent from a dead one. This is the direct consequence of
    state-change-triggered reporting and the next thing to build.
-3. **Go aggregator does not persist anything** — accepted reports are discarded.
-4. **No transport security or authentication** — plain HTTP, no API keys; TLS
+3. **The retry queue is unbounded** — no size cap, no age cutoff, and terminal
+   `DELIVERED`/`FAILED` rows are never pruned. Each row holds the full report
+   JSON, so an agent that cannot reach its backend grows the table indefinitely.
+   Suppression reduces the rate but does not bound it: a host whose posture
+   flaps produces a real change every cycle with nowhere to send it.
+4. **Go aggregator does not persist anything** — accepted reports are discarded.
+5. **No transport security or authentication** — plain HTTP, no API keys; TLS
    would have to terminate at a reverse proxy.
-5. **POSIX osquery timeout is best-effort** — see the bounds table.
-6. **Foreign keys not enforced** — `PRAGMA foreign_keys=ON` is never set.
-7. **No versioned migrations** — additive changes only.
-8. **Traffic reduction is unmeasured.** The mechanism works and is tested, but
+6. **POSIX osquery timeout is best-effort** — see the bounds table.
+7. **Foreign keys not enforced** — `PRAGMA foreign_keys=ON` is never set.
+8. **No versioned migrations** — additive changes only.
+9. **Traffic reduction is unmeasured.** The mechanism works and is tested, but
    no benchmark exists, and any figure must count heartbeat overhead once
    heartbeats exist, or it measures "stopped sending" rather than "sent less".
-9. **`src/json_to_lua.cpp` is orphaned** — not listed in `CMakeLists.txt`, so it
+10. **`src/json_to_lua.cpp` is orphaned** — not listed in `CMakeLists.txt`, so it
    is never compiled at all; `lua_evaluator.cpp` has its own private converter.
-10. **No MQTT client** — the `DeliveryClient` interface exists to allow one.
+11. **No MQTT client** — the `DeliveryClient` interface exists to allow one.
 
 ---
 

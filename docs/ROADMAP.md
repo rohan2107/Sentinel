@@ -59,7 +59,65 @@ Note this changes the wire format, so
 [`tests/canonicalization`](../tests/canonicalization/README.md) is the guard —
 expect `golden.json` to change and review that diff deliberately.
 
-### 3. Validate the number range at the hash boundary
+### 3. Bound the retry queue
+
+`retry_queue` has no size cap, no age cutoff and no pruning of terminal rows. It
+holds the full `report_json` per entry, so an agent that cannot reach its backend
+accumulates rows indefinitely, and `DELIVERED` and `FAILED` rows are never
+removed even after they have served their purpose. On an endpoint — a laptop that
+sleeps, changes network, or sits behind a captive portal — partitions are normal
+operating conditions rather than incidents.
+
+Suppression masks this rather than fixing it: unchanged posture no longer
+enqueues at all, so a stable offline host now grows the queue slowly. The case
+that defeats both is a **flapping** host — a VPN or firewall check toggling as
+the machine moves between networks — which produces a genuine posture change
+every cycle *and* has nowhere to deliver it. That is the common endpoint case,
+not an edge case.
+
+**Simple time-based eviction, first.** Predictable, easy to reason about under
+partition, and easy to state in the guarantees:
+
+- Delete terminal rows (`DELIVERED`, `FAILED`) older than a retention window.
+  These are history; they carry no delivery obligation.
+- Drop `PENDING` rows older than a maximum age, **oldest first**. A report from
+  last week has little value once newer ones for the same host exist, whereas
+  evicting the newest would discard the most recent known state.
+- Both windows configurable, with defaults documented.
+
+Two interactions to get right:
+
+*It changes the delivery guarantee.* Evicting a `PENDING` report deliberately
+abandons it, so at-least-once becomes at-least-once **within the retention
+window**. That is a legitimate trade for a bounded agent, but it is a semantic
+change and
+[`architecture/README.md`](../architecture/README.md#what-does-not-hold) must say
+so rather than continuing to claim the stronger property.
+
+*It interacts with suppression.* `last_reported_posture_hash` reads the newest
+non-`FAILED` row. If eviction removes the row it was reading, the next evaluation
+sees a different or absent last-reported posture and re-reports. That is the safe
+direction — biased toward sending — but it should be a tested behaviour rather
+than an accident.
+
+**Priority-based eviction, later.** The better idea, and worth building once the
+simple version is in place and there is something to compare against.
+
+Not all reports are equally valuable. For compliance, what matters is the current
+state plus the *transitions between states*, not every sample. Under pressure the
+queue should keep a posture **degradation** — a control switching off, a score
+dropping — and shed the intermediate samples of a flap, which collapse to "this
+host toggled between A and B N times" without losing meaning. The rule weights in
+the policy already encode severity, and the score delta between consecutive
+reports gives the direction, so the inputs for ranking exist.
+
+This is log compaction applied to posture history, and it is a more interesting
+answer than a time window because it degrades on the axis that matters instead of
+the one that is easy to measure. Keep it as the follow-on rather than the
+starting point: the simple evictor bounds the disk, and the priority version then
+has a baseline to prove itself against.
+
+### 4. Validate the number range at the hash boundary
 
 The canonicalization contract supports integers within ±(2^53−1) and no floats.
 Outside that, the three implementations disagree, because Go decodes JSON numbers
@@ -71,9 +129,9 @@ Done when: values outside the contract are rejected with a specific message at
 the agent *and* at both receivers, and the two `expect: "diverge"` fixtures
 become rejection tests.
 
-### 4. Measure the traffic reduction properly
+### 5. Measure the traffic reduction properly
 
-Only after items 1–3. The mechanism works and is tested but no number exists,
+Only after items 1–4. The mechanism works and is tested but no number exists,
 and the number is the point.
 
 Design the measurement before collecting it:
@@ -91,7 +149,7 @@ Done when the README can say something like "at a 60s evaluation interval with
 posture changing every N hours, delivered bytes fall X% against unconditional
 reporting, heartbeats included" and a script reproduces it.
 
-### 5. Finish the honest-README pass
+### 6. Finish the honest-README pass
 
 Corrected so far: the Lua timeout, the resource bounds, and the scoring formula.
 Still overstated: "PRODUCTION-READY", "Comprehensive testing", and a Phase 2
