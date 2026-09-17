@@ -5,19 +5,18 @@ name: Validate Backend
 # bundled into the Windows workflow only because of file history, which meant
 # it went dormant along with build-windows the moment that workflow became
 # manual-only. It belongs on its own, always-on trigger.
+# Unconditional, not path-filtered. See the identical comment in
+# go-aggregator.yml: validate-backend is a required branch protection check,
+# and a required check that only triggers on a path filter can never be
+# satisfied on a PR that does not touch those paths, so the PR is stuck
+# forever waiting for a status that will never be reported. This job is a
+# few seconds of pure Python either way, so there is no real cost to running
+# it on every push/PR.
 on:
   push:
     branches: [ master ]
-    paths:
-      - 'backend/**'
-      - 'policies/**'
-      - '.github/workflows/validate-backend.yml'
   pull_request:
     branches: [ master ]
-    paths:
-      - 'backend/**'
-      - 'policies/**'
-      - '.github/workflows/validate-backend.yml'
 
 jobs:
   validate-backend:

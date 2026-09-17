@@ -208,6 +208,14 @@ int main(int argc, char** argv) {
 
     json outcomes = json::object();
 
+    // Flat {rule_id, passed, weight} triples for persistence, one per rule
+    // actually evaluated -- not a fixed set of named fields, so db.cpp needs
+    // no schema change when any policy on any platform introduces a new rule
+    // id. Weight is captured here, at evaluation time, because it is the
+    // value that was actually applied to this run; the policy file it came
+    // from may since have changed.
+    json rule_results = json::array();
+
     // Evaluate each rule
     for (const auto& rule : policy["rules"]) {
         try {
@@ -219,6 +227,7 @@ int main(int argc, char** argv) {
             const std::string id = rule.at("id").get<std::string>();
             const std::string query = rule.at("query").get<std::string>();
             const std::string luacode = rule.at("lua").get<std::string>();
+            const int weight = rule.value("weight", 0);
 
             spdlog::info("Running osquery for rule {}: {}", id, query);
             // run_osquery_json throws on internal errors; returns JSON array on success
@@ -228,11 +237,13 @@ int main(int argc, char** argv) {
             } catch (const std::exception& e) {
                 spdlog::error("osquery error for rule {}: {}", id, e.what());
                 outcomes[id] = false;
+                rule_results.push_back({{"rule_id", id}, {"passed", false}, {"weight", weight}});
                 continue; // move to next rule
             }
 
             bool pass = eval_lua_against_json(luacode, results);
             outcomes[id] = pass;
+            rule_results.push_back({{"rule_id", id}, {"passed", pass}, {"weight", weight}});
 
             spdlog::info("{} -> {}", id, (pass ? "PASS" : "FAIL"));
         } catch (const std::exception& e) {
@@ -303,7 +314,8 @@ int main(int argc, char** argv) {
                        report.value("hostname", std::string("unknown-host")),
                        report.value("policy", std::string("")),
                        report.value("score", 0),
-                       details_flat);
+                       details_flat,
+                       rule_results);
 
         run_id = db.get_last_run_id();
         spdlog::info("Persisted run to sentinel_data.sqlite3 (run_id={})", run_id);

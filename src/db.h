@@ -22,18 +22,29 @@ struct DB {
     // create schema if not exists
     void init_schema();
 
-    // persist a run: store timestamp (ISO), hostname, policy, score, details (json)
+    // Persist a run: timestamp (ISO), hostname, policy name, score, and the
+    // full outcomes map (for runs.details_json, unchanged).
+    //
+    // rule_results is a flat array of {rule_id, passed, weight} built by the
+    // caller during rule evaluation, one entry per rule -- not a fixed set of
+    // named fields, so it works identically for any policy on any platform.
+    // Optional: defaults to empty for callers (mostly tests) that only care
+    // about the runs/details_json side of persistence.
     void persist_run(const std::string& iso_ts,
                      const std::string& hostname,
                      const std::string& policy,
                      int score,
-                     const nlohmann::json& details);
+                     const nlohmann::json& details,
+                     const nlohmann::json& rule_results = nlohmann::json::array());
 
     // get last inserted run_id (call after persist_run)
     int get_last_run_id();
 
     // convenience: export runs to JSON array
     nlohmann::json all_runs_json();
+
+    // Rule outcomes for one run, as {rule_id, passed, weight} objects.
+    nlohmann::json rule_results_for_run(int run_id);
 
     // --- Retry Queue Operations ---
     
