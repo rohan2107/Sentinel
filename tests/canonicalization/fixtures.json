@@ -1,0 +1,190 @@
+[
+  {
+    "id": "01-realistic-macos",
+    "note": "A real report as the agent emits it today. The baseline that must never break.",
+    "report": {
+      "policy": "sample-default-macos",
+      "score": 0,
+      "details": {
+        "av_installed": false,
+        "filevault_encrypted": false,
+        "firewall_enabled": false,
+        "sip_enabled": false
+      },
+      "timestamp": "2026-09-16T15:56:45.264Z",
+      "hostname": "Rohans-MacBook-Air.local"
+    }
+  },
+  {
+    "id": "02-realistic-windows",
+    "note": "Windows baseline report, mixed pass/fail.",
+    "report": {
+      "policy": "sample-default-windows",
+      "score": 75,
+      "details": {
+        "firewall_enabled": true,
+        "av_installed": true,
+        "security_center_status": false
+      },
+      "timestamp": "2026-02-18T10:30:00.123Z",
+      "hostname": "DESKTOP-WIN10"
+    }
+  },
+  {
+    "id": "03-key-order-shuffled",
+    "note": "Same content as 01 with keys declared in a different order. All three encoders must sort, so this must hash identically to 01.",
+    "report": {
+      "timestamp": "2026-09-16T15:56:45.264Z",
+      "score": 0,
+      "hostname": "Rohans-MacBook-Air.local",
+      "details": {
+        "sip_enabled": false,
+        "firewall_enabled": false,
+        "filevault_encrypted": false,
+        "av_installed": false
+      },
+      "policy": "sample-default-macos"
+    }
+  },
+  {
+    "id": "04-empty-details",
+    "note": "Policy with no rules. Empty object must encode as {} everywhere.",
+    "report": {
+      "policy": "empty-policy",
+      "score": 100,
+      "details": {},
+      "timestamp": "2026-09-16T00:00:00.000Z",
+      "hostname": "host"
+    }
+  },
+  {
+    "id": "05-html-chars",
+    "note": "Go escapes <, > and & to \\u003c etc. by default. Probes SetEscapeHTML(false).",
+    "report": {
+      "policy": "policy<with>html&chars",
+      "score": 50,
+      "details": {
+        "rule<a>": true,
+        "rule&b": false
+      },
+      "timestamp": "2026-09-16T00:00:00.000Z",
+      "hostname": "host<1>"
+    }
+  },
+  {
+    "id": "06-non-ascii",
+    "note": "Python's json.dumps escapes non-ASCII to \\uXXXX unless ensure_ascii=False. nlohmann and Go emit raw UTF-8. Hostnames really can contain these.",
+    "report": {
+      "policy": "política-de-segurança",
+      "score": 60,
+      "details": {
+        "règle_un": true,
+        "规则二": false
+      },
+      "timestamp": "2026-09-16T00:00:00.000Z",
+      "hostname": "Rohan’s-MacBook-Air.local"
+    }
+  },
+  {
+    "id": "07-emoji-astral",
+    "note": "Astral-plane codepoint (outside the BMP) forces surrogate-pair handling.",
+    "report": {
+      "policy": "emoji-🔒-policy",
+      "score": 10,
+      "details": {
+        "locked_🔐": true
+      },
+      "timestamp": "2026-09-16T00:00:00.000Z",
+      "hostname": "host-🖥"
+    }
+  },
+  {
+    "id": "08-escapes-and-controls",
+    "note": "Quote, backslash, forward slash, newline and tab. Encoders differ on whether / is escaped and on \\u0009 vs \\t.",
+    "report": {
+      "policy": "quote\"back\\slash/fwd",
+      "score": 20,
+      "details": {
+        "line\nbreak": true,
+        "tab\there": false
+      },
+      "timestamp": "2026-09-16T00:00:00.000Z",
+      "hostname": "host"
+    }
+  },
+  {
+    "id": "09-integer-bounds",
+    "note": "EXPECTED TO DIVERGE. Go's encoding/json unmarshals every JSON number into float64 when the target is map[string]any, so integers above 2^53 are silently rounded: 9007199254740993 becomes ...992. C++ and Python preserve it. Real reports carry no integer larger than a score (0-100), so this records the boundary rather than a bug to chase. The fix is to declare and validate the supported number range, not to make three float formatters agree - see tests/canonicalization/README.md.",
+    "report": {
+      "policy": "int-bounds",
+      "score": 0,
+      "details": {
+        "ok": true
+      },
+      "timestamp": "2026-09-16T00:00:00.000Z",
+      "hostname": "host",
+      "big_positive": 9007199254740993,
+      "big_negative": -9007199254740993,
+      "zero": 0,
+      "negative": -42
+    },
+    "expect": "diverge"
+  },
+  {
+    "id": "10-floats",
+    "note": "EXPECTED TO DIVERGE. Two separate Go differences: 1e20 renders as 100000000000000000000 where C++/nlohmann and Python render 1e+20, and the float 1.0 renders as 1 where the others render 1.0. Float formatting is the least portable corner of JSON. Reports contain no floats - score is an integer and rule outcomes are booleans - so the contract should forbid them outright rather than try to reconcile three formatters.",
+    "report": {
+      "policy": "floats",
+      "score": 0,
+      "details": {
+        "ok": true
+      },
+      "timestamp": "2026-09-16T00:00:00.000Z",
+      "hostname": "host",
+      "tenth": 0.1,
+      "whole_float": 1.0,
+      "large": 1e+20,
+      "small": 1e-20
+    },
+    "expect": "diverge"
+  },
+  {
+    "id": "11-nulls-and-nesting",
+    "note": "Null values and nested structures, which the current flat report shape does not produce but a richer policy would.",
+    "report": {
+      "policy": "nested",
+      "score": 30,
+      "details": {
+        "rule_a": true,
+        "rule_b": null,
+        "evidence": {
+          "rows": [
+            1,
+            2,
+            3
+          ],
+          "empty": [],
+          "deep": {
+            "k": "v"
+          }
+        }
+      },
+      "timestamp": "2026-09-16T00:00:00.000Z",
+      "hostname": "host"
+    }
+  },
+  {
+    "id": "12-unicode-normalisation",
+    "note": "caf\\u00e9 (NFC, precomposed é) versus caf\\u0065\\u0301 (NFD, e + combining acute). Identical on screen, different bytes, so they must hash differently and must not be silently normalised. Written as escapes so the intended codepoints are unambiguous in the fixture file itself.",
+    "report": {
+      "policy": "café-nfc",
+      "score": 40,
+      "details": {
+        "café_nfc": true,
+        "café_nfd": false
+      },
+      "timestamp": "2026-09-16T00:00:00.000Z",
+      "hostname": "host"
+    }
+  }
+]

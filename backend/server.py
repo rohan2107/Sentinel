@@ -3,10 +3,13 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import sqlite3
-import hashlib
 import json
 from datetime import datetime, timezone
 from typing import Any, Union
+
+# Canonicalization lives in its own module so the differential test can import
+# it without starting the app. See tests/canonicalization/README.md.
+from canonical import compute_hash
 
 app = FastAPI(title="Sentinel Backend", version="1.0.0")
 
@@ -55,8 +58,7 @@ async def receive_report(submission: ReportSubmission) -> Union[JSONResponse, di
     Verifies hash matches report content.
     """
     # Verify hash matches content
-    canonical = json.dumps(submission.report, sort_keys=True, separators=(',', ':'))
-    computed_hash = hashlib.sha256(canonical.encode()).hexdigest()
+    computed_hash = compute_hash(submission.report)
     
     if computed_hash != submission.hash:
         raise HTTPException(

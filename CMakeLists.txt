@@ -291,6 +291,18 @@ target_link_libraries(test_lua_evaluator PRIVATE
   Lua::Lua
 )
 
+# Canonicalization emitter for the cross-language differential test. Prints the
+# canonical form and hash of each shared fixture; tests/canonicalization/
+# compare.py diffs it against the Python and Go emitters. Not a test on its own
+# — the comparison is what asserts.
+add_executable(canon_dump
+  tests/canonicalization/canon_dump.cpp
+  src/report_hasher.cpp
+)
+
+target_include_directories(canon_dump PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(canon_dump PRIVATE nlohmann_json::nlohmann_json)
+
 enable_testing()
 add_test(NAME delivery_foundation COMMAND test_delivery_foundation)
 add_test(NAME lua_evaluator

@@ -95,6 +95,30 @@ else
 fi
 echo
 
+# --- Canonicalization differential test ------------------------------------
+# Needs all three toolchains. Compares the C++, Python and Go report-hash
+# encoders against shared fixtures; see tests/canonicalization/README.md.
+echo "---------------------------------------------------"
+echo "Canonicalization differential test"
+echo "---------------------------------------------------"
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "--- skipped (python3 not on PATH)"
+elif ! command -v go >/dev/null 2>&1; then
+  echo "--- skipped (go not on PATH; a two-way comparison could hide a divergence)"
+else
+  canon_bin=""
+  for candidate in "$PROJECT_ROOT/build/canon_dump" "$PROJECT_ROOT/build-debug/canon_dump"; do
+    [[ -x "$candidate" ]] && canon_bin="$candidate" && break
+  done
+  if [[ -z "$canon_bin" ]]; then
+    echo "--- skipped (canon_dump not built)"
+  else
+    python3 tests/canonicalization/compare.py --cpp "$canon_bin" \
+      || fail "canonicalization differential test"
+  fi
+fi
+echo
+
 # --- Backend syntax check (mirrors the validate-backend CI job) -------------
 echo "---------------------------------------------------"
 echo "Backend syntax check"

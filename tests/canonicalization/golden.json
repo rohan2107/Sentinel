@@ -1,0 +1,15 @@
+{
+  "_note": "Agreed canonical hashes. Regenerate with --update-golden.",
+  "hashes": {
+    "01-realistic-macos": "ad522bb85f628b5fb4f76f117c4f883cf20bbae915b9f15718b85eb0d1c8ebcf",
+    "02-realistic-windows": "73b4ce7bdd45d86223f67dda9ea804d1307e570a6b9f46467811ff9f8aabf0e2",
+    "03-key-order-shuffled": "ad522bb85f628b5fb4f76f117c4f883cf20bbae915b9f15718b85eb0d1c8ebcf",
+    "04-empty-details": "c9cfc6e4c2a38e8aa9e93033be7c9970535dc62d23f979605577c9ade4b0692e",
+    "05-html-chars": "446c6935d5c694d4b04d85b051b7a432903a489dc2e665b78a3b028dc9e0c077",
+    "06-non-ascii": "edf35fd45f001e6de4cfd6e6154e3aa123dce5e2ce5c22386e947b592baf9c8b",
+    "07-emoji-astral": "6c1d6e06c44482f9e7fbbd9b75ac26fea89a34f4eeb770ade0786b3c27bf5bfa",
+    "08-escapes-and-controls": "244db54f0e2d6ec778fbca12447da123c834e214b5c9cd420e4b8da7cf099ec3",
+    "11-nulls-and-nesting": "e99fbc5d820c3d9cc191af4a577bf5a7bb9cb54c11d980dc3afdd575fb815ba8",
+    "12-unicode-normalisation": "cde94c0e739c116f7f035b4937f05895b36196125affbe3a34f1c21bfb3ec0c3"
+  }
+}

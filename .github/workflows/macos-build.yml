@@ -4,17 +4,19 @@ name: macOS Build (CMake + Homebrew)
 # resolve dependencies through entirely different package managers (vcpkg vs
 # Homebrew), so a shared job would be mostly conditionals.
 
+# go-aggregator/ is deliberately NOT ignored here: this is the only job that runs
+# the canonicalization differential test, which compares the Go encoder against
+# the C++ and Python ones. Skipping it on Go-only changes would let the Go side of
+# that contract drift unchecked.
 on:
   push:
     branches: [ master ]
     paths-ignore:
-      - 'go-aggregator/**'
       - 'docs/**'
       - '**.md'
   pull_request:
     branches: [ master ]
     paths-ignore:
-      - 'go-aggregator/**'
       - 'docs/**'
       - '**.md'
 
@@ -45,6 +47,13 @@ jobs:
         # the Lua suite feeds synthetic rows straight to the evaluator. osquery
         # is a runtime dependency of the agent, not of the test suite.
         run: ctest --preset macos-release
+
+      - name: Canonicalization differential test
+        # Runs here rather than in a language-specific workflow because it is the
+        # only job with all three toolchains: C++ (built above), Python 3 and Go
+        # are all present on the macOS runner. No --allow-missing: a two-way
+        # comparison can hide a three-way disagreement.
+        run: python3 tests/canonicalization/compare.py --cpp ./build/canon_dump
 
       - name: Verify the agent runs
         # Without osquery every rule fails collection and the score is 0. That
