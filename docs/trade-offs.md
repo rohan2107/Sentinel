@@ -30,7 +30,11 @@ Key decisions for Sentinel's implementation with alternatives, benefits, limitat
 
 **Why**: Deploy rules as JSON (no recompile), sandboxed (no I/O), human-readable, 200KB VM, 0.1-1ms eval.
 
-**Cost**: 100x slower than C++. Security: malicious infinite loops (mitigated by 1s timeout + instruction limit).
+**Cost**: 100x slower than C++. Security: a malicious or buggy policy can loop
+forever — **no timeout or instruction limit is implemented**, despite earlier
+claims here. Only the library surface is restricted (`base`, `table`, `string`,
+`math`), which prevents I/O but not CPU exhaustion. Policy authorship must be
+trusted. See [architecture/README.md](../architecture/README.md#known-gaps).
 
 **Fails When**: Complex rules, µs latency required, formal verification needed.
 
@@ -74,4 +78,7 @@ Key decisions for Sentinel's implementation with alternatives, benefits, limitat
 
 ---
 
-**For delivery layer architecture details** (HTTP client, RetryQueue manager, FastAPI backend), see [`docs/roadmap/IMPLEMENTATION_PLAN.md`](roadmap/IMPLEMENTATION_PLAN.md). MQTT delivery client remains as future enhancement.
+**For how the delivery layer actually works** (the two hashes, state machine,
+backoff, and what it does and does not guarantee), see
+[`architecture/README.md`](../architecture/README.md). For what is planned next,
+see [`docs/ROADMAP.md`](ROADMAP.md).

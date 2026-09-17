@@ -1,391 +1,375 @@
 # Sentinel Architecture
 
-Local security compliance evaluation agent with deterministic policy execution, durable persistence, and delivery foundation.
+Sentinel is a host security-compliance agent. It collects operating-system state
+with osquery, evaluates policy rules written in Lua, scores the result, persists
+it locally, and delivers it to a backend with at-least-once semantics.
 
-## System Architecture
+It is a single-process agent plus two independent receivers. It is not a
+distributed system, there is no fleet coordination, and it has one agent per
+host with no clustering.
+
+Everything below describes code that exists. Claims about bounds and guarantees
+say explicitly where enforcement is partial, and [Known gaps](#known-gaps) lists
+what is not true yet. That section is the honest counterpart to this one; read
+both.
+
+---
+
+## System shape
 
 ```mermaid
-graph TB
-    subgraph "Agent (Single Process)"
-        M[main.cpp<br/>Orchestrator]
-        PV[Policy Validator]
-        OR[osquery Runner<br/>10s timeout]
-        LE[Lua Evaluator<br/>1s timeout, sandboxed]
-        SC[Scoring Engine<br/>Weighted sum]
-        DB[(SQLite<br/>WAL Mode)]
-        RW[Report Writer<br/>JSON]
-        
-        RH[Report Hasher<br/>SHA-256]
-        DC[DeliveryClient<br/>Interface]
-        MOCK[MockDeliveryClient<br/>Testing]
-        
-        M --> PV
-        PV --> M
-        M --> OR
-        OR --> LE
-        LE --> SC
-        SC --> DB
-        DB --> RW
-        
-        RW --> RH
-        RH --> DB
-        DB --> DC
-        DC --> MOCK
-    end
-    
-    subgraph "Filesystem"
-        POL[policies/<br/>sample_policy.json]
-        REP[reports/<br/>latest_report.json]
-        DBFILE[(sentinel_data.sqlite3<br/>runs + features + retry_queue)]
-    end
-    
-    M -.reads.-> POL
-    RW -.writes.-> REP
-    DB -.persists.-> DBFILE
-    
-    classDef storage fill:#e1f5ff,stroke:#01579b
-    classDef compute fill:#fff3e0,stroke:#e65100
-    classDef delivery fill:#e8f5e9,stroke:#2e7d32
-    
-    class DB,DBFILE storage
-    class M,PV,OR,LE,SC,RW compute
-    class RH,DC,MOCK delivery
+flowchart LR
+    POL[("policies/<br/>*.json")] --> LOAD["load +<br/>validate"]
+    LOAD --> OSQ["osquery_runner<br/>osqueryi, no shell"]
+    OSQ --> LUA["lua_evaluator<br/>Lua 5.4<br/>base·table·string·math"]
+    LUA -.->|"next rule"| OSQ
+    LUA --> SCORE["scoring<br/>base_score −<br/>failed weights"]
+
+    SCORE --> REP[("reports/<br/>latest_report.json")]
+    SCORE --> SQL[("sentinel_data.sqlite3<br/>runs · features<br/>retry_queue")]
+    SCORE --> HASH["report_hasher<br/>event hash +<br/>posture hash"]
+
+    HASH --> SUPP{"posture<br/>changed?"}
+    SUPP -->|"no — suppress"| QUEUE
+    SUPP -->|"yes — enqueue"| QUEUE
+    QUEUE["retry_queue<br/>backoff + jitter"] <--> SQL
+    QUEUE --> HTTP["http_delivery_client<br/>cpp-httplib"]
+
+    HTTP -->|"POST /reports"| PY["backend/server.py<br/>verifies hash<br/>stores"]
+    HTTP -->|"POST /reports"| GO["go-aggregator<br/>verifies + dedups<br/>DISCARDS"]
+
+    classDef store fill:#e1f5ff,stroke:#01579b,color:#01579b
+    classDef gap fill:#fff3e0,stroke:#e65100,color:#bf360c
+    class POL,SQL,REP store
+    class GO gap
 ```
 
-## Implementation Status
-
-**Phase 1 (Local Evaluation):** ✅ Complete
-**Phase 2 (HTTP Delivery):** ✅ Complete
-**Future:** ⏳ MQTT delivery client
-
-See [`docs/roadmap/IMPLEMENTATION_PLAN.md`](../docs/roadmap/IMPLEMENTATION_PLAN.md) for detailed breakdown.
+The agent talks to **one** backend URL at a time (`--backend-url`). The Python
+backend and the Go aggregator implement the same `POST /reports` contract; they
+are alternatives, not a pipeline. The Go service is shaded because it verifies
+and deduplicates but **discards** accepted reports — it has no storage layer yet.
 
 ---
 
-## Components
+## Execution flow
 
-### **main.cpp** - Agent Orchestrator
-- **Purpose**: Controls evaluation lifecycle, error handling, resource cleanup
-- **Responsibilities**:
-  - Command-line argument parsing
-  - Policy file loading
-  - Orchestrate evaluation pipeline
-  - Exception handling and logging
-  - Exit code determination
+Order matters here and differs from what you might assume:
 
-### **Policy Validator**
-- **Purpose**: Parse and validate JSON policy files
-- **Validation**:
-  - JSON schema correctness
-  - Required fields present
-  - Rule structure well-formed
-  - Lua syntax check (basic)
-- **Failures**: Invalid JSON → graceful error + exit code 1
+1. **Crash recovery first.** With `--enable-delivery`, the agent opens the
+   database and retries anything left `PENDING` by a previous run *before*
+   evaluating anything. A crashed agent resumes delivery on restart.
+2. Load and validate the policy. Malformed policy is terminal, exit 1.
+3. For each rule: run osquery, convert rows to a Lua table, evaluate the rule's
+   Lua to a boolean. A rule that errors or times out is recorded as **failed**,
+   and evaluation continues to the next rule.
+4. Score: `base_score`, minus the weight of every failed rule, clamped to 0–100.
+5. Assemble the report and print it to stdout.
+6. **Write `reports/latest_report.json`** — this happens *before* the database
+   write, so a report file can exist for a run that was never persisted.
+7. Persist to SQLite: `runs` + `features` in one `BEGIN IMMEDIATE`/`COMMIT`.
+8. If delivery is enabled, decide whether to report at all (below), then enqueue
+   and attempt immediate delivery.
 
-### **osquery Runner** (osquery_runner.cpp)
-- **Purpose**: Execute osquery data collection with timeout enforcement
-- **Implementation**:
-  - Spawns `osqueryi.exe` subprocess
-  - 10-second timeout (SIGTERM then SIGKILL)
-  - Captures stdout/stderr
-  - Parses JSON output
-- **Failures**: Timeout → empty results, osquery crash → logged + continue
-
-### **Lua Evaluator** (lua_evaluator.cpp)
-- **Purpose**: Execute rule logic in sandboxed Lua runtime
-- **Sandboxing**:
-  - No file I/O (`io` library disabled)
-  - No network (`socket` disabled)
-  - No process spawn (`os.execute` disabled)
-  - 1-second timeout via instruction count limit
-- **Input**: osquery results (JSON → Lua table)
-- **Output**: Boolean (rule pass/fail)
-- **Failures**: Timeout → rule fails, Lua error → logged + rule fails
-
-### **Scoring Engine** (scoring.cpp)
-- **Purpose**: Compute weighted score from rule results
-- **Algorithm**:
-  ```
-  score = SUM(rule.weight IF rule passed)
-  max_possible = SUM(all rule weights)
-  percentage = (score / max_possible) * 100
-  ```
-- **Output**: Integer score (0-100)
-
-### **SQLite Database** (db.cpp)
-- **Purpose**: Durable persistence with crash-safe guarantees
-- **Configuration**:
-  - WAL mode (`PRAGMA journal_mode=WAL`)
-  - Atomic transactions (`BEGIN IMMEDIATE; ... COMMIT;`)
-  - Foreign key constraints enforced
-- **Schema**:
-  ```sql
-  -- Phase 1: Evaluation results
-  CREATE TABLE runs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts TEXT NOT NULL,            -- ISO-8601 timestamp
-    hostname TEXT,
-    policy TEXT,
-    score INTEGER,
-    details_json TEXT            -- Full evaluation details
-  );
-  
-  CREATE TABLE features (
-    run_id INTEGER PRIMARY KEY,
-    firewall_enabled INTEGER,
-    av_installed INTEGER,
-    FOREIGN KEY(run_id) REFERENCES runs(id)
-  );
-  
-  -- Phase 2: Delivery queue (foundation)
-  CREATE TABLE retry_queue (
-    run_id INTEGER PRIMARY KEY,
-    report_hash TEXT UNIQUE NOT NULL,
-    report_json TEXT NOT NULL,
-    attempts INTEGER DEFAULT 0,
-    state TEXT NOT NULL CHECK (state IN ('PENDING', 'DELIVERED', 'FAILED')),
-    next_retry_at TEXT,
-    created_at TEXT NOT NULL,
-    delivered_at TEXT,
-    failed_at TEXT,
-    last_error TEXT,
-    FOREIGN KEY (run_id) REFERENCES runs(id)
-  );
-  ```
-- **New Methods (Phase 2 Foundation)**:
-  - `enqueue_report()` - Add report to delivery queue
-  - `load_pending_reports()` - Crash recovery
-  - `mark_delivered()`, `mark_failed()`, `update_retry()` - State transitions
-- **Guarantees**: WAL ensures durability, atomic transactions prevent partial writes
-
-### **Report Writer**
-- **Purpose**: Generate JSON report files
-- **Output Format**:
-  ```json
-  {
-    "policy": "policy-name",
-    "score": 75,
-    "details": { "rule_id": true/false },
-    "timestamp": "2026-02-18T10:30:00.123Z",
-    "hostname": "MACHINE-NAME"
-  }
-  ```
-- **Location**: `reports/latest_report.json`
-- **Failures**: Disk full → logged, but doesn't prevent database persistence
-
-### **Report Hasher** (report_hasher.cpp) - Phase 2 Foundation ✅
-- **Purpose**: SHA-256 content hashing for idempotent delivery
-- **Implementation**:
-  - Standalone SHA-256 (no OpenSSL dependency)
-  - Canonicalize JSON (sorted keys via nlohmann::json)
-  - Returns 64-character hex string
-- **Use Case**: Deduplication at backend (same report = same hash)
-
-### **DeliveryClient** (delivery_client.cpp) - Phase 2 ✅
-- **Purpose**: Abstract delivery interface for protocol flexibility
-- **Implemented**:
-  - `DeliveryClient` abstract base class (pure virtual)
-  - `MockDeliveryClient` for testing (configurable success/failure)
-  - `HttpDeliveryClient` for HTTP POST delivery (cpp-httplib)
-- **Planned**:
-  - `MqttDeliveryClient` for MQTT QoS 1 publish
+Steps 6, 7 and 8 are each best-effort and independently wrapped: a failure in
+any of them is logged and the agent continues, because losing a report file is
+not a reason to lose the database row.
 
 ---
 
-## Data Flow (Current)
+## The two hashes
 
-```
-1. Parse CLI args → policy file path
-2. Load policy JSON → validate schema
-3. For each rule:
-   3a. Execute osquery (timeout 10s)
-   3b. Parse JSON results
-   3c. Evaluate Lua code (timeout 1s, sandboxed)
-   3d. Record pass/fail
-4. Compute weighted score
-5. BEGIN TRANSACTION
-6. INSERT INTO runs (...)
-7. INSERT INTO features (...)
-8. COMMIT
-9. Write JSON report file
-10. Exit (code 0 if success)
+This is the central design decision, and the thing most worth understanding.
+
+| | `posture_hash` | `report_hash` (event hash) |
+|---|---|---|
+| Covers | `policy`, `score`, `details` | the whole report, **including `timestamp`** |
+| Answers | "has the state changed?" | "which report is this?" |
+| Scope | agent-local, never transmitted | sent on the wire, receivers recompute it |
+| Excludes | `timestamp`, `hostname` | nothing |
+
+**Why two.** A single hash cannot answer both questions. Covering `timestamp`
+makes every hash unique, so it can identify a specific report but can never
+detect that nothing changed. Excluding `timestamp` detects change but collapses
+distinct events: a host whose posture goes A → B → A would have its return to A
+silently dropped as a duplicate, which is exactly the transition a security
+product exists to record.
+
+`hostname` is excluded from posture deliberately: it is identity, not posture.
+Including it would make renaming a machine look like a security state change.
+
+**State-change-triggered reporting.** Before enqueueing, the agent compares the
+current `posture_hash` against the last posture it committed to reporting. If
+they match, nothing is sent. Local evaluation and persistence still happen on
+every run — only delivery is suppressed. On a fleet whose posture is almost
+always static, unconditional reporting is nearly all of the traffic.
+
+**Where "last reported posture" comes from.** Not a separate state table — it is
+derived from the queue itself:
+
+```sql
+SELECT posture_hash FROM retry_queue
+WHERE state IN ('PENDING', 'DELIVERED') AND posture_hash IS NOT NULL
+ORDER BY run_id DESC LIMIT 1
 ```
 
----
+Excluding `FAILED` is load-bearing. A report whose delivery was permanently
+abandoned was never actually reported, so it must not suppress the next attempt;
+excluding it means the next evaluation re-reports that posture automatically,
+with no reset bookkeeping. `posture_hash IS NOT NULL` covers the upgrade path, so
+a row written before the column existed cannot wrongly suppress the first report
+after an upgrade. Ordering is by `run_id`, not `created_at`, because
+`datetime('now')` has one-second resolution and two runs in the same second would
+be ambiguous.
 
-## Persistence Guarantees
+### Canonicalization is a cross-language contract
 
-### What SQLite WAL Provides
+The agent computes `report_hash`; both receivers recompute it from the report
+they parsed and reject a mismatch. So the exact bytes hashed are a contract
+between three independently written JSON encoders (nlohmann, `json.dumps`,
+`encoding/json`), which do **not** agree by default — they differ on non-ASCII
+escaping, HTML escaping and number formatting. A disagreement does not fail
+loudly; it makes every affected report return `400 hash mismatch` indefinitely.
 
-**Atomicity**: Transaction either fully commits or fully rolls back (no partial writes)
-
-**Durability**: Once `COMMIT` returns, data survives power loss (WAL fsync)
-
-**Isolation**: Readers see consistent snapshot (MVCC via WAL)
-
-**Crash Recovery**: WAL checkpoint on next open replays committed transactions
-
-### Phase 2 Foundation Guarantees (Implemented)
-
-**No Report Loss After Persistence**: Once in runs table, report survives crashes (SQLite WAL)
-
-**Idempotent Enqueue**: UNIQUE constraint on report_hash prevents duplicate queue entries
-
-**State Consistency**: CHECK constraint enforces only valid states (PENDING, DELIVERED, FAILED)
-
-**Atomic State Transitions**: Each state change is a single UPDATE (atomic)
-
-**Crash-Safe Queue**: load_pending_reports() restores PENDING reports on restart
-
-### What Is NOT Yet Guaranteed
-
-- **No MQTT Delivery**: Only HTTP delivery is implemented
-- **No Ordered Delivery**: Reports may arrive out of order at backend
-- **No Exactly-Once**: At-least-once semantics; backend deduplicates
+[`tests/canonicalization`](../tests/canonicalization/README.md) enforces this
+against shared fixtures and documents the two number cases that lie outside the
+supported range. Both hashes share one canonicalizer, so any encoding change
+surfaces there.
 
 ---
 
-## Resource Bounds (Enforced)
+## Delivery
 
-| Resource | Limit | Enforcement | Failure Mode |
-|----------|-------|-------------|--------------|
-| **osquery CPU** | 10s timeout | Process kill (SIGTERM → SIGKILL) | Empty results, evaluation continues |
-| **Lua CPU** | 1s timeout | Instruction count hook | Rule fails, evaluation continues |
-| **Lua Memory** | Process heap limit | Lua allocator | Out-of-memory → Lua error |
-| **osquery Output** | 1MB | Stdout buffer truncation | Parsed as much as fits |
-| **SQLite Disk** | Filesystem limit | Write failure on disk full | Transaction aborted, eval fails |
-| **Policy File Size** | 10MB | fread size check | File too large → validation error |
+```
+enqueue ──▶ PENDING ──delivered──▶ DELIVERED (terminal)
+               │
+               ├──transient failure──▶ PENDING with next_retry_at, attempts+1
+               │
+               └──attempts > max_retries──▶ FAILED (terminal)
+```
 
----
+Backoff is `min(300, 2^attempts)` seconds with ±25% jitter, so retries do not
+synchronise across a fleet. `max_retries` defaults to 10.
 
-## Error Handling (Current)
+`load_pending_reports()` returns `PENDING` rows whose `next_retry_at` has passed,
+which is both the normal retry path and the crash-recovery path — there is no
+separate recovery mechanism.
 
-### Recoverable Errors (Continue Evaluation)
+**Enqueue is idempotent.** `INSERT ... ON CONFLICT(report_hash) DO NOTHING`,
+returning whether a row was inserted. Re-queueing an already-queued report is
+what an at-least-once producer does when it cannot tell whether the first attempt
+landed; treating it as an error would turn a benign retry into a failure.
 
-- osquery timeout → empty results, Lua sees empty table
-- Lua timeout → rule marked as failed
-- Lua runtime error (e.g., nil access) → rule fails, logged
-- Single rule failure → other rules still evaluated
+**HTTP 409 counts as success.** A duplicate at the receiver means the report
+already arrived, so the agent marks it delivered rather than retrying forever.
+This is what turns at-least-once transport into effectively-once storage.
 
-### Terminal Errors (Exit Immediately)
+### What actually holds
 
-- Policy file not found → exit code 1
-- Policy JSON malformed → exit code 1
-- SQLite database locked (concurrent access) → exit code 1
-- Disk full during persistence → exit code 1
+- **Durability after commit.** Once the SQLite transaction commits, the run
+  survives a crash or power loss (WAL + fsync).
+- **At-least-once delivery.** A report that is enqueued is retried until
+  delivered or until retries are exhausted.
+- **Effectively-once storage**, via receiver-side dedup on `report_hash`.
+- **Atomic state transitions.** Each transition is one `UPDATE`.
+- **Valid states only.** A `CHECK` constraint restricts `state` to the three
+  values.
 
----
+### What does not hold
 
-## Performance (Observed During Local Testing)
+- **No ordering.** Reports may arrive out of order; nothing sequences them.
+- **No exactly-once.** The receiver may see the same report twice and must
+  deduplicate.
+- **No delivery guarantee before persistence.** A crash between step 7 and
+  step 8 leaves a persisted run that was never queued. It is not retried,
+  because only queued reports are recoverable.
+- **No liveness signal.** Suppression means silence is ambiguous: a healthy
+  agent with unchanged posture and a dead agent look identical. There is no
+  heartbeat yet. A receiver could flag an agent stale after some interval, but
+  nothing does.
+- **No report authenticity.** Agents are trusted. A compromised host can forge
+  reports; there is no signing and no client certificate.
 
-**Hardware**: Windows 10, i7-8750H (6 cores), 16GB RAM, SSD
+### Failure scenarios
 
-**Execution**:
-- Policy validation: <1ms
-- osquery (3 queries): 150ms average
-- Lua evaluation (5 rules): 2ms total
-- SQLite transaction: 3ms (WAL mode)
-- **Total**: ~160ms per evaluation
-
-**Resource Usage**:
-- CPU: 3% average (spikes to 25% during osquery)
-- Memory: 45MB RSS (stable)
-- Disk I/O: ~2 writes/sec (WAL checkpoints)
-
-**Capacity**:
-- Evaluations/sec: ~6 (limited by osquery, not Sentinel)
-- Typical use case: 1 eval/5min = 0.003/sec (far below capacity)
-- SQLite: Handles 10k writes/sec (single agent needs ~0.003/sec)
-
----
-
-## Design Principles
-
-1. **Fail-Safe Defaults**: Errors default to "fail" (rule fails, score reduced) not "crash"
-2. **Resource Bounds**: Every external operation has timeout to prevent hangs
-3. **Separation of Concerns**: Policy, data, logic, persistence all separate modules
-4. **Crash-Safe Persistence**: WAL mode ensures durability, no partial writes
-5. **Offline-First**: No network dependency, works in air-gapped environments
-6. **Observable**: All errors logged (spdlog), exit codes meaningful
-
----
-
-## Current Limitations
-
-### By Design (Intentional Constraints)
-
-- **No MQTT Delivery**: HTTP only (MQTT can be added via DeliveryClient interface)
-- **No TLS**: HTTP-only; terminate TLS at reverse proxy
-- **No Distributed Coordination**: Single-agent only
-- **Windows-Only**: Windows Security Center queries, `osqueryi.exe` paths
-
-### Technical Debt (Could Improve)
-
-- **Hardcoded Paths**: osquery binary path not configurable
-- **Basic Logging**: spdlog used but minimal structured logging
-- **No Metrics**: No Prometheus/StatsD instrumentation
-- **No Authentication**: Backend accepts all reports (no API keys)
+| Scenario | Detected by | Behaviour |
+|---|---|---|
+| Backend down / network partition | connection refused or timeout | Report stays `PENDING`, exponential backoff, drains on reconnect |
+| Crash before delivery | `PENDING` rows found at next startup | Retried automatically — same code path as normal retry |
+| Crash after send, before response | nothing — the agent cannot tell | Report is re-sent; receiver dedups on `report_hash` and answers `409` |
+| Receiver rejects with 4xx | HTTP status | Terminal for that report; counted as an attempt, not retried indefinitely |
+| Retries exhausted | `attempts > max_retries` | `FAILED`; posture is re-reported on the next evaluation because the suppression query skips `FAILED` |
+| Corrupt database | `SQLITE_CORRUPT` on open or query | **Not handled.** The agent throws and exits; no `integrity_check` or recovery path |
+| Large backlog after long outage | queue depth | **Not handled.** All ready reports are drained in one pass with no rate limit |
 
 ---
 
-## Delivery Layer (Phase 2 - Complete)
+## Data model
 
-**✅ Implemented:**
-- Durable retry queue (SQLite 3-state machine)
-- SHA-256 content hashing (standalone)
-- DeliveryClient interface + MockDeliveryClient + HttpDeliveryClient
-- RetryQueue manager with exponential backoff (1s → 300s, ±25% jitter)
-- Crash recovery on startup (load_pending_reports)
-- main.cpp integration (--enable-delivery, --backend-url)
-- FastAPI backend with hash deduplication
-- Integration test suite
+```sql
+CREATE TABLE runs (                    -- one row per evaluation, always written
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts TEXT NOT NULL,                    -- ISO-8601 UTC, milliseconds
+  hostname TEXT,
+  policy TEXT,
+  score INTEGER,
+  details_json TEXT                    -- {rule_id: bool}
+);
 
-**⏳ Future Enhancement:**
-- MQTT delivery client (QoS 1)
+CREATE TABLE features (                -- flattened for future ML use
+  run_id INTEGER PRIMARY KEY,
+  firewall_enabled INTEGER,            -- hardcoded columns: rule ids
+  av_installed INTEGER,                -- must match these names to populate
+  FOREIGN KEY(run_id) REFERENCES runs(id)
+);
 
-See [`docs/roadmap/`](../docs/roadmap/) for detailed implementation status.
+CREATE TABLE retry_queue (             -- one row per report committed for delivery
+  run_id INTEGER PRIMARY KEY,
+  report_hash TEXT UNIQUE NOT NULL,    -- event hash: whole report incl. timestamp
+  posture_hash TEXT,                   -- posture only; NULL on pre-upgrade rows
+  report_json TEXT NOT NULL,           -- exact bytes to send
+  attempts INTEGER DEFAULT 0,
+  state TEXT NOT NULL CHECK (state IN ('PENDING','DELIVERED','FAILED')),
+  next_retry_at TEXT,
+  created_at TEXT NOT NULL,
+  delivered_at TEXT,
+  failed_at TEXT,
+  last_error TEXT,
+  FOREIGN KEY(run_id) REFERENCES runs(id)
+);
+```
 
----
+Two things to know about this schema:
 
-## Source Files
+**`features` is hardcoded.** Its columns are literally `firewall_enabled` and
+`av_installed`, so a policy only populates them if its rule ids use those exact
+names. This is why the macOS policy reuses those two ids for its firewall and
+Gatekeeper rules. Any other rule id is recorded in `runs.details_json` but not
+in `features`.
 
-**Phase 1 (Evaluation):**
+**Foreign keys are declared but not enforced.** SQLite defaults
+`foreign_keys=OFF` and the agent only sets `journal_mode=WAL`, so these
+constraints currently document intent rather than enforcing it.
 
-| File | Purpose |
-|------|---------|
-| `src/main.cpp` | Orchestration, error handling |
-| `src/osquery_runner.cpp` | osquery execution with timeout |
-| `src/lua_evaluator.cpp` | Sandboxed Lua runtime |
-| `src/scoring.cpp` | Weighted score computation |
-| `src/db.cpp` | SQLite persistence (WAL) |
-| `src/json_to_lua.cpp` | JSON → Lua table conversion |
-
-**Phase 2 (Delivery):**
-
-| File | Purpose |
-|------|---------|
-| `src/db.cpp` (additions) | retry_queue schema + methods |
-| `src/report_hasher.cpp` | SHA-256 content hashing |
-| `src/delivery_client.cpp` | Interface + MockDeliveryClient |
-| `src/http_delivery_client.cpp` | HTTP POST delivery (cpp-httplib) |
-| `src/retry_queue.cpp` | Retry manager with exponential backoff |
-| `src/main.cpp` (additions) | --enable-delivery, crash recovery |
-| `backend/server.py` | FastAPI backend with hash dedup |
-| `test_delivery_foundation.cpp` | Integration tests |
-
----
-
-## Dependencies
-
-- **nlohmann/json**: JSON parsing (header-only)
-- **sol2**: Lua C++ bindings (header-only)
-- **spdlog**: Logging
-- **sqlite3**: Embedded database
-- **lua**: Lua 5.4 runtime
-- **cpp-httplib**: HTTP client (header-only)
-
-All installed via vcpkg.
+Schema changes are applied additively: `CREATE TABLE IF NOT EXISTS`, plus a
+guarded `ALTER TABLE ... ADD COLUMN` for `posture_hash` that checks
+`PRAGMA table_info` first so it is idempotent. There is no versioned migration
+framework yet.
 
 ---
 
-This architecture demonstrates clean separation of concerns, crash-safe persistence, and resource-bounded execution without network layer complexity.
+## Resource bounds
+
+| Resource | Bound (claimed or intended) | Actually enforced? |
+|---|---|---|
+| osquery wall time | 10s | **Windows only.** `WaitForSingleObject` bounds it. On POSIX the check sits inside the read loop, so it only fires while output is flowing — a silently hanging `osqueryi` blocks in `read()` indefinitely |
+| osquery output | 1 MB | Yes, but same caveat: checked per read |
+| osquery process cleanup | kill on breach | `SIGKILL` / `TerminateProcess` directly, with no `SIGTERM` grace period |
+| Lua CPU time | 1s (claimed by earlier docs) | **No. Not enforced at all.** See below |
+| Lua memory | — | Not bounded; the default allocator is used |
+| Lua library surface | no I/O | Yes — only `base`, `table`, `string`, `math` are opened, so `io`, `os` and `package` are absent |
+| Policy file size | — | Not checked. Only `query` length (4096 chars) is validated |
+| Delivery attempts | 10 | Yes, then `FAILED` |
+| HTTP request | 30s | Yes — connection, read and write timeouts via cpp-httplib |
+
+**The Lua timeout does not exist.** There is no `lua_sethook`, no instruction
+counter and no wall-clock check in `lua_evaluator.cpp`. Measured directly: a rule
+running a 3-billion-iteration loop ran for 9.75 seconds and returned normally
+rather than being aborted. A policy containing `while true do end` hangs the
+agent forever. Since policies are data that the evaluation loop executes, this is
+the most significant gap in the system.
+
+The library restriction is real and worth stating precisely: those four libraries
+are simply never opened, which is stronger than disabling functions after the
+fact. But a restricted library surface is not a CPU bound, and it is not a
+security boundary — policy authorship must be trusted.
+
+---
+
+## Receivers
+
+Both implement the same contract: `POST /reports` with
+`{"report": {...}, "hash": "<sha256-hex>"}`, recompute the hash over the report's
+canonical form, and reject a mismatch with `400`.
+
+**`backend/server.py`** (FastAPI). Verifies the hash, returns `409` for a
+`report_hash` already stored, otherwise inserts into `received_reports` and
+returns `200`. Canonicalization lives in `backend/canonical.py`, which has no
+FastAPI or database imports so it can be tested in isolation. SQLite path is
+hardcoded relative to the working directory.
+
+**`go-aggregator`** (Go). Verifies the hash, deduplicates against a bounded LRU
+of recently seen hashes, returns `409` on a hit and `200` otherwise — and then
+drops the report. There is **no storage layer, no metrics endpoint and no
+Dockerfile**, so it is currently less functional than the Python backend it was
+intended to replace. `internal/canonical` holds the encoder, shared between the
+handler and the differential test.
+
+Neither receiver authenticates requests.
+
+---
+
+## Known gaps
+
+Ordered by how much they matter:
+
+1. **No Lua CPU bound** — a policy can hang the agent indefinitely.
+2. **No heartbeat** — with suppression active, silence cannot distinguish a
+   healthy agent from a dead one. This is the direct consequence of
+   state-change-triggered reporting and the next thing to build.
+3. **Go aggregator does not persist anything** — accepted reports are discarded.
+4. **No transport security or authentication** — plain HTTP, no API keys; TLS
+   would have to terminate at a reverse proxy.
+5. **POSIX osquery timeout is best-effort** — see the bounds table.
+6. **Foreign keys not enforced** — `PRAGMA foreign_keys=ON` is never set.
+7. **No versioned migrations** — additive changes only.
+8. **Traffic reduction is unmeasured.** The mechanism works and is tested, but
+   no benchmark exists, and any figure must count heartbeat overhead once
+   heartbeats exist, or it measures "stopped sending" rather than "sent less".
+9. **`src/json_to_lua.cpp` is orphaned** — not listed in `CMakeLists.txt`, so it
+   is never compiled at all; `lua_evaluator.cpp` has its own private converter.
+10. **No MQTT client** — the `DeliveryClient` interface exists to allow one.
+
+---
+
+## Component reference
+
+| File | Role |
+|---|---|
+| `src/main.cpp` | Orchestration, CLI, crash recovery, suppression decision |
+| `src/osquery_runner.cpp` | Spawns `osqueryi` without a shell, captures stdout |
+| `src/lua_evaluator.cpp` | Sandboxed Lua 5.4 via sol2; JSON rows → Lua table |
+| `src/scoring.cpp` | `base_score` minus failed weights, clamped 0–100 |
+| `src/db.cpp` | SQLite (WAL), schema, retry-queue operations |
+| `src/report_hasher.cpp` | Canonical JSON + SHA-256; event and posture hashes |
+| `src/delivery_client.cpp` | `DeliveryClient` interface + `MockDeliveryClient` |
+| `src/http_delivery_client.cpp` | HTTP POST via cpp-httplib |
+| `src/retry_queue.cpp` | Backoff, jitter, state transitions |
+| `src/json_to_lua.cpp` | Orphaned, not built — see gap 9 |
+| `backend/canonical.py` | Canonical JSON + SHA-256 (Python side of the contract) |
+| `backend/server.py` | FastAPI receiver with hash dedup |
+| `go-aggregator/internal/canonical/` | Canonical JSON + SHA-256 (Go side) |
+| `go-aggregator/internal/dedup/` | Bounded LRU of seen hashes |
+| `go-aggregator/internal/handler/` | `POST /reports` |
+
+Tests: `test_delivery_foundation.cpp` (hashing, queue, suppression, flapping,
+failure re-reporting), `test_lua_evaluator.cpp` (rule logic, no osquery needed),
+`tests/canonicalization/` (three-language hash agreement).
+
+---
+
+## Platform and dependencies
+
+Windows (x64, vcpkg + MSBuild) and macOS (Homebrew + CMake) are both built and
+tested in CI. Linux presets exist but are untested. Policies are **not**
+portable — each rule carries an osquery query, and the tables differ per OS.
+
+Lua is pinned to 5.4 on both platforms because policy rules are Lua source
+shipped as data, so the language version is part of the policy contract. CMake
+runs an ABI probe at configure time that fails the build if the Lua headers and
+the linked library disagree; this exists because sol2 resolves `<lua/lua.h>`
+before `<lua.h>`, so a second Lua installation on the include path can silently
+be compiled against while a different one is linked, producing a runtime panic on
+first policy evaluation rather than a build error.
+
+Dependencies: nlohmann/json, sol2, spdlog, sqlite3, Lua 5.4, cpp-httplib;
+FastAPI + pydantic for the Python backend; `hashicorp/golang-lru` for Go.
