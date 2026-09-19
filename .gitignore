@@ -26,8 +26,10 @@
 # macOS
 .DS_Store
 
-# Claude Code agent memory/plans (local only)
-.claude/
+# Claude Code: local state stays ignored; the shared hook and settings are tracked
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
 
 # Temporary files
 *.bak
